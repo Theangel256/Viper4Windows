@@ -122,7 +122,7 @@ export function Sidebar() {
         {/* Logo */}
         <div className="flex items-center justify-between mb-8">
           <div className="h-12 w-12 bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-purple-500 font-black text-xl">
-            L
+            V
           </div>
           <button className="p-2 rounded-xl hover:bg-white dark:hover:bg-zinc-800 shadow-sm border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 transition-all">
             <svg className="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

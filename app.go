@@ -364,7 +364,7 @@ func presetsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, "LumaFX", "presets")
+	dir := filepath.Join(home, "Viper4Windows", "presets")
 	return dir, os.MkdirAll(dir, 0755)
 }
 

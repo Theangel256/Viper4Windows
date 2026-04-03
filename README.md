@@ -1,11 +1,11 @@
 <p align="center">
-   <a href="https://github.com/Theangel256/LumaFX/releases">
+   <a href="https://github.com/Theangel256/Viper4Windows/releases">
     <!-- <img width="256" height="256" src="" /> -->
-    <h1 align="center">LumaFX</h1>
+    <h1 align="center">Viper4Windows</h1>
    </a>
 </p>
 
-**LumaFX** is an advanced Digital Signal Processing (DSP) workstation designed for Windows. By combining the power and efficiency of **Go** on the backend with an ultra-modern interface built using **Astro** and **React**, LumaFX offers granular control over your system's auditory experience.
+**Viper4Windows** is an advanced Digital Signal Processing (DSP) workstation designed for Windows. By combining the power and efficiency of **Go** on the backend with an ultra-modern interface built using **Astro** and **React**, Viper4Windows offers granular control over your system's auditory experience.
 
 
 ## ✨ Key Features
@@ -43,8 +43,8 @@ The project utilizes a cutting-edge hybrid architecture:
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/Theangel256/LumaFX.git](https://github.com/Theangel256/LumaFX.git)
-    cd LumaFX
+    git clone [https://github.com/Theangel256/Viper4Windows.git](https://github.com/Theangel256/Viper4Windows.git)
+    cd Viper4Windows
     ```
 
 2.  **Install frontend dependencies:**
@@ -71,7 +71,7 @@ To generate the final Windows executable (`.exe`):
 ## 📂 Project Structure
 
 ```text
-LumaFX/
+Viper4Windows/
 ├── frontend/             # Interface source code (Astro + React)
 │   ├── src/components/   # UI Components
 │   ├── src/store/        # State management (audioStore.ts)
@@ -81,7 +81,3 @@ LumaFX/
 ├── go.mod                # Go module definition
 └── wails.json            # Wails build configuration
 ```
-## 📄 LICENSE
-Copyright © 2026 LumaFX. All rights reserved.
-
-This project is licensed under the Apache License 2.0. You can find the full terms and conditions in the LICENSE file included in this repository.

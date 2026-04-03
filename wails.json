@@ -1,6 +1,6 @@
 {
-    "name": "LumaFX",
-    "outputfilename": "lumafx",
+    "name": "Viper4Windows",
+    "outputfilename": "Viper4Windows",
     "frontend:install": "bun install",
     "frontend:build": "bun run build",
     "frontend:dev:command": "bun run dev",
