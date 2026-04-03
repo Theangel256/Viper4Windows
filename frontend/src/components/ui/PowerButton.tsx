@@ -2,46 +2,40 @@ import { useAudioStore } from "../../store/audioStore";
 import { Power, AlertCircle, Settings } from "lucide-react";
 
 export function PowerButton() {
-  const { master, setPower, isDriverInstalled } = useAudioStore();
-
-  const handlePowerClick = () => {
+  const { master, setPower, isDriverInstalled, checkDriverStatus } = useAudioStore();
+  const handleAction = async () => {
     if (!isDriverInstalled) {
-      // Aquí es donde disparas tu lógica de "Configurador"
-      // Por ejemplo: abrir un modal de instalación o ir a la pestaña de drivers
-      console.log("Acción bloqueada: Instala el driver primero.");
+      // Si no hay driver, intentamos instalarlo
+      try {
+        const success = await window.go.main.App.SetDriverStatus(true);
+        if (success) {
+          alert("¡Driver instalado! Reiniciando estado...");
+          checkDriverStatus(); // Actualizamos el store sin recargar toda la página
+        } else {
+          alert("Error: Asegúrate de ejecutar como Administrador.");
+        }
+      } catch (err) {
+        console.error("Error en FixDriver:", err);
+      }
       return;
     }
+    
+    // Si hay driver, simplemente toggle del power
     setPower(!master.power);
   };
-
-  // 1. Estado: Driver no instalado
-  if (!isDriverInstalled) {
-    return (
-      <button 
-        onClick={handlePowerClick}
-        className="flex items-center gap-2 px-4 py-1.5 rounded-full transition-all border 
-                   bg-amber-50 text-amber-600 border-amber-200 
-                   dark:bg-amber-900/10 dark:text-amber-500 dark:border-amber-900/30 
-                   hover:bg-amber-100 cursor-help font-bold text-sm"
-        title="Haz clic para configurar el driver de audio"
-      >
-        <AlertCircle size={14} /> DRIVER REQUIRED
-      </button>
-    );
-  }
-
-  // 2. Estado: Driver OK (Tu botón original con lógica segura)
   return (
     <button 
-      onClick={handlePowerClick}
+      onClick={handleAction}
       className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-all border text-sm font-bold ${
-        master.power 
-        ? 'bg-accent/10 text-accent border-accent/20 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.15)]' 
-        : 'bg-zinc-100 text-zinc-400 border-zinc-200 dark:bg-zinc-800 dark:border-zinc-700'
+        !isDriverInstalled 
+          ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/30' 
+          : master.power 
+            ? 'bg-purple-500/10 text-purple-400 border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.15)]'
+            : 'bg-zinc-800 text-zinc-500 border-zinc-700'
       }`}
     >
-      <Power size={14} /> 
-      {master.power ? 'POWER ON' : 'POWER OFF'}
+      {!isDriverInstalled ? <AlertCircle size={14} /> : <Power size={14} />}
+      {!isDriverInstalled ? 'INSTALL DRIVER' : master.power ? 'POWER ON' : 'POWER OFF'}
     </button>
   );
 }

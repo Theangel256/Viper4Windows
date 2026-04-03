@@ -137,6 +137,7 @@ interface AudioStore extends DSPState {
   equalizer: number[];
   setEqBand: (index: number, db: number) => void;
   resetEq: () => void;
+  checkDriverStatus: () => Promise<void>;
 
   /** Hydrate store from Go on app start */
   init(): Promise<void>;
@@ -191,6 +192,10 @@ export const useAudioStore = create<AudioStore>()(
   setDriverStatus(status) {
     set((s) => ({ isDriverInstalled: status }));
     go(() => window.go.main.App.SetDriverStatus(status));
+  },
+  checkDriverStatus: async () => {
+    const installed = await window.go.main.App.CheckDriver();
+    set({ isDriverInstalled: installed });
   },
 
   // ── Master ────────────────────────────────────────────────────────────────

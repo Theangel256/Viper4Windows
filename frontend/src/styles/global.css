@@ -74,9 +74,16 @@
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
 }
+@font-face {
+  font-family: 'SF Pro Rounded';
+  src: url('/frontend/src/assets/SF-Pro-Rounded-Regular.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+}
+
 
 @theme inline {
-    --font-sans: 'Roboto Variable', sans-serif;
+    --font-sans: 'SF Pro Rounded', sans-serif;
     --font-heading: 'Instrument Sans Variable', sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
@@ -194,3 +201,13 @@
 
 /* Dark mode scrollbar */
 .dark *::-webkit-scrollbar-thumb { background: theme("colors.zinc.700"); }
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.62 0.21 20 / 0.4); }
+  50% { box-shadow: 0 0 20px 5px oklch(0.62 0.21 20 / 0.2); }
+}
+
+.logo-error {
+  border-color: oklch(0.62 0.21 20);
+  animation: pulse-red 2s infinite;
+}

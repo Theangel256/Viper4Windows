@@ -30,9 +30,9 @@ const (
 // Esta estructura debe replicar EXACTAMENTE el orden de ViPER4Windows
 // según el archivo /ViPERDSP/DSP.h del repo de RE.
 type VIPER_DSP_PARAMS struct {
-	Enabled float32 // 0.0f o 1.0f
-	PreVol  float32 // dB
-	PostVol float32 // dB
+	Enabled float32
+	PreVol  float32
+	PostVol float32
 
 	// El bloque del EQ de 18 bandas
 	// Frecuencias: 65, 93, 131, 185, 262, 370, 523, 740,
@@ -40,8 +40,15 @@ type VIPER_DSP_PARAMS struct {
 	EqEnabled float32
 	EqBands   [18]float32
 
-	// Otros parámetros (XBass, etc.) vienen después
-	// Si solo queremos mover el EQ, necesitamos asegurar el offset
+	// XBass (Siguiente bloque en memoria)
+	XBassEnabled float32
+	XBassSize    float32 // Speaker Size (2, 5, etc)
+	XBassLevel   float32 // Bass Level dB
+
+	// XClarity
+	XClarityEnabled float32
+	XClarityLevel   float32
+	XClarityMode    float32 // 0: Natural, 1: OZone+, 2: X-HiFi
 }
 
 func (a *App) writeToSharedMemory(params VIPER_DSP_PARAMS) error {

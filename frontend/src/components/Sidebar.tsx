@@ -2,6 +2,7 @@ import { useState, useEffect, memo } from "react";
 import { createPortal } from "react-dom";
 import { useAudioStore } from "../store/audioStore";
 import { DSPButton } from "./ui/DSPButton";
+import { ThemeToggle } from "./ui/ThemeToggle.jsx"
 
 // --- COMPONENTES DE ICONOS (Renderizados y Estáticos 1 sola vez) ---
 const MusicIcon = memo(() => (
@@ -39,9 +40,9 @@ const MODES = [
   { id: "freestyle", label: "Freestyle", Icon: FreestyleIcon },
 ] as const;
 
-// --- MODALES OPTIMIZADOS (Sin lag al escribir) ---
 const SavePresetModal = ({ isOpen, onClose, onSave }: any) => {
   const [name, setName] = useState("");
+
   if (!isOpen) return null;
 
   return createPortal(
@@ -111,6 +112,10 @@ export function Sidebar() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const { isDriverInstalled } = useAudioStore();
+  
+  // 1. Nuevo estado para controlar el colapso
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -118,28 +123,37 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className="flex flex-col w-[230px] h-screen shrink-0 py-8 px-5 bg-transparent border-r border-zinc-200/50 dark:border-zinc-800/50">
-        {/* Logo */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="h-12 w-12 bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-purple-500 font-black text-xl">
-            V
-          </div>
-          <button className="p-2 rounded-xl hover:bg-white dark:hover:bg-zinc-800 shadow-sm border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 transition-all">
-            <svg className="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-            </svg>
-          </button>
-        </div>
-
+    <aside className={`fixed left-0 top-0 flex flex-col h-screen shrink-0 py-8 px-5 bg-transparent border-r border-zinc-200/50 dark:border-zinc-800/50 transition-all duration-300 ease-in-out ${
+          isCollapsed ? "w-[90px]" : "w-[230px]"
+        }`}>
+    {/* Logo y Botón de Contraer */}
+    {/* REAJUSTADO: flex-col y gap cuando está colapsado para centrar */}
+    <div className={`flex items-center mb-10 ${isCollapsed ? "flex-col gap-6" : "justify-between"}`}>
+      <div className={`${!isDriverInstalled ? "logo-error" : ""} h-16 w-16 bg-white dark:bg-zinc-900 rounded-[22px] shadow-lg border border-zinc-200/60 dark:border-zinc-800 flex items-center justify-center text-purple-600 font-black text-4xl shrink-0 transition-all duration-300 hover:scale-105 active:scale-95`}>
+      V
+    </div>
+    {/* Botón hamburguesa */}
+    <ThemeToggle />
+    <button onClick={() => setIsCollapsed(!isCollapsed)} className="p-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors">
+      <svg className={`w-6 h-6 text-zinc-500 transition-transform ${isCollapsed ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
+      </svg>
+    </button>
+  </div>
+  
         {/* Navegación de Modos */}
-        <nav className="flex flex-col gap-2">
+        {/* REAJUSTADO: gap más grande (gap-3) y padding lateral dinámico */}
+        <nav className={`flex flex-col gap-3 ${isCollapsed ? "items-center px-0" : "px-1"}`}>
           {MODES.map(({ id, label, Icon }) => {
             const active = mode === id;
             return (
               <button
                 key={id}
                 onClick={() => setMode(id as any)}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-[14px] font-medium transition-all duration-200 text-left w-full
+                title={isCollapsed ? label : ""}
+                // REAJUSTADO: Padding dinámico para colapsado y texto centrado
+                className={`flex items-center rounded-xl text-[14px] font-medium transition-all duration-200 text-left w-full overflow-hidden
+                  ${isCollapsed ? "justify-center px-0 py-3.5" : "gap-3 px-4 py-3"}
                   ${active 
                     ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 border border-red-200 dark:border-red-900/30 shadow-sm" 
                     : "text-zinc-500 dark:text-zinc-400 hover:bg-white/60 dark:hover:bg-zinc-800/60 border border-transparent"
@@ -148,38 +162,42 @@ export function Sidebar() {
                 <span className={active ? "text-red-500" : "text-zinc-400"}>
                   <Icon />
                 </span>
-                {label}
+                {!isCollapsed && <span className="truncate animate-in fade-in slide-in-from-left-1 duration-200">{label}</span>}
               </button>
             );
           })}
         </nav>
-
-        {/* Barra de intensidad Freestyle */}
-        {mode === "freestyle" && (
-          <div className="px-4 mt-3">
+        
+        {/* ... (Barra Freestyle y flex-1 se mantienen) ... */}
+        {mode === "freestyle" && !isCollapsed && (
+          <div className="px-5 mt-4 animate-in fade-in duration-300"> {/* Ajustado padding */}
             <div className="h-1 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
               <div className="h-full w-2/5 rounded-full bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.4)]" />
             </div>
           </div>
         )}
-
         <div className="flex-1" />
 
         {/* Botones Inferiores (Load/Save) */}
-        <div className="flex flex-col gap-3 mt-auto">
+        {/* REAJUSTADO: gap más grande (gap-4) y padding dinámico */}
+        <div className={`flex flex-col gap-4 mt-auto ${isCollapsed ? "items-center px-0" : "px-1"}`}>
           <DSPButton 
-            className="w-full justify-center gap-2 py-3 shadow-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800" 
+            title={isCollapsed ? "Load Preset" : ""}
+            // REAJUSTADO: Ancho y padding dinámico para colapsado
+            className={`shadow-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 ${isCollapsed ? "w-14 h-14 p-0 justify-center rounded-2xl" : "w-full justify-center gap-2 py-3"}`} 
             onClick={() => setShowLoadModal(true)}
           >
-            <LoadPresetIcon></LoadPresetIcon>
-            Load Preset
+            <LoadPresetIcon />
+            {!isCollapsed && "Load Preset"}
           </DSPButton>
+          
           <DSPButton 
-            className="w-full justify-center gap-2 py-3 shadow-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800" 
+            title={isCollapsed ? "Save Preset" : ""}
+            className={`shadow-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 ${isCollapsed ? "w-14 h-14 p-0 justify-center rounded-2xl" : "w-full justify-center gap-2 py-3"}`} 
             onClick={() => setShowSaveModal(true)}
           >
-            <SavePresetIcon></SavePresetIcon>
-            Save Preset
+            <SavePresetIcon />
+            {!isCollapsed && "Save Preset"}
           </DSPButton>
         </div>
       </aside>

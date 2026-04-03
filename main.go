@@ -35,7 +35,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:         "Luma — Audio DSP",
+		Title:         "Viper4Windows — Audio DSP",
 		Width:         1200,
 		Height:        680,
 		MinWidth:      900,

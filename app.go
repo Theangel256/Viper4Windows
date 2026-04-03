@@ -142,6 +142,14 @@ func NewApp() *App {
 // startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Al arrancar, verificamos si el driver está OK
+	installed := a.CheckDriver()
+	if installed {
+		fmt.Println("Driver detectado correctamente en el arranque.")
+	} else {
+		fmt.Println("Driver no encontrado. Se requiere instalación.")
+	}
 }
 
 // ── Manejo de Instancia Única ────────────────────────────────────────────────
@@ -157,25 +165,52 @@ func (a *App) OnSecondInstanceLaunch(data options.SecondInstanceData) {
 
 // ── APO Driver Management ─────────────────────────────────────────────────────
 
+// CheckDriver verifica si el registro existe Y si el archivo DLL físico está presente
 func (a *App) CheckDriver() bool {
 	apoKey := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`
+
+	// 1. Verificamos si la clave principal existe
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, apoKey, registry.QUERY_VALUE)
 	if err != nil {
 		return false
 	}
-	k.Close()
+	defer k.Close()
+
+	// 2. Leemos la ruta de la DLL que Windows está intentando cargar
+	dllPath, _, err := k.GetStringValue("Library")
+	if err != nil || dllPath == "" {
+		return false
+	}
+
+	// 3. Verificamos si el archivo realmente existe en el disco duro
+	if _, err := os.Stat(dllPath); os.IsNotExist(err) {
+		return false // El registro existe pero el archivo fue borrado/movido
+	}
+
 	return true
 }
 
 // SetDriverStatus permite instalar o desinstalar el driver desde la App
 func (a *App) SetDriverStatus(install bool) bool {
 	if install {
-		err := a.FixDriver() // Tu función que extrae la DLL y registra
-		return err == nil
+		log.Println("Iniciando instalación del driver APO...")
+		err := a.FixDriver()
+		if err != nil {
+			log.Printf("Error instalando driver: %v\n", err)
+			return false
+		}
+		return true
 	} else {
-		// Lógica para desinstalar: eliminar la clave del registro
+		log.Println("Desinstalando driver APO...")
 		apoKey := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`
+
+		// Es buena práctica borrar primero las subclaves antes que la llave padre
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, apoKey+`\AudioInterface0`)
 		err := registry.DeleteKey(registry.LOCAL_MACHINE, apoKey)
+
+		// IMPORTANTÍSIMO: Reiniciar el servicio de audio para que Windows suelte la DLL
+		_ = a.RestartAudioServices()
+
 		return err == nil
 	}
 }
@@ -240,6 +275,17 @@ func (a *App) RestartAudioServices() error {
 	return nil
 }
 
+func (a *App) PatchDefaultEndpoint() error {
+	// Esta ruta varía según el ID de tu tarjeta de sonido (GUID del Endpoint)
+	// Para hacerlo automático, habría que iterar sobre:
+	// HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render
+
+	log.Println("Buscando dispositivos de audio para parchear...")
+	// Por ahora, lo más seguro es usar 'Equalizer APO' o el configurador original
+	// para marcar el check del dispositivo una sola vez.
+	return nil
+}
+
 // ToggleEnable toggles the ViperFX driver state in the Windows Registry
 func (a *App) ToggleEnable(enabled bool) error {
 	var k registry.Key
@@ -263,14 +309,12 @@ func (a *App) ToggleEnable(enabled bool) error {
 	return k.SetDWordValue("Enabled", val)
 }
 
-// GetDeviceStatus returns the current status
+// GetDeviceStatus returns the current status (Depende de CheckDriver ahora para más robustez)
 func (a *App) GetDeviceStatus() (string, error) {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`, registry.QUERY_VALUE)
-	if err != nil {
-		return "Driver Missing", nil
+	if a.CheckDriver() {
+		return "Registered", nil
 	}
-	k.Close()
-	return "Registered", nil
+	return "Driver Missing", nil
 }
 
 // ── DSP State Methods ─────────────────────────────────────────────────────────
@@ -338,14 +382,28 @@ func (a *App) SetReverbPanel(p ReverbPanelState) {
 
 // SetEqBand actualiza una banda específica
 func (a *App) SetEqBand(index int, db float64) {
-	// Validamos que el índice exista en nuestro array de 18
 	if index >= 0 && index < len(a.state.Equalizer) {
-		// Limitamos el rango de -12dB a +12dB
 		a.state.Equalizer[index] = clamp(db, -12, 12)
-		// Aquí llamarías a tu motor de audio nativo para aplicar el cambio en tiempo real
 
-		// LOG para debug:
-		// fmt.Printf("Band %d set to %.2f dB\n", index, db)
+		// 1. Construir el paquete de datos para el APO
+		params := VIPER_DSP_PARAMS{
+			Enabled:   1.0, // Forzar encendido para probar
+			PreVol:    float32(a.state.Master.PreVol),
+			PostVol:   float32(a.state.Master.PostVol),
+			EqEnabled: 1.0, // Ecualizador encendido
+		}
+
+		for i := 0; i < 18; i++ {
+			params.EqBands[i] = float32(a.state.Equalizer[i])
+		}
+
+		// 2. Enviar a la memoria compartida (y loguear si hay error)
+		err := a.writeToSharedMemory(params)
+		if err != nil {
+			fmt.Printf("❌ ERROR APO: %v\n", err)
+		} else {
+			fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ export function XBass() {
       />
       <DSPSlider
         label="Bass Level"
-        min={-12} max={12} step={0.05}
+        min={0} max={12} step={0.05}
         value={xBass.level}
         unit="dB"
         onChange={(v) => setXBass({ level: v })}
