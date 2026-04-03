@@ -1,0 +1,13 @@
+{
+    "name": "LumaFX",
+    "outputfilename": "lumafx",
+    "frontend:install": "bun install",
+    "frontend:build": "bun run build",
+    "frontend:dev:command": "bun run dev",
+    "frontend:dir": "frontend",
+    "wailsjsdir": "./frontend/src",
+    "assetdir": "frontend/dist",
+    "dev:devserverurl": "http://localhost:4321",
+    "go:main": "main.go",
+    "buildmode": "dev"
+  }

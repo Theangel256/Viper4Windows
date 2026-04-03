@@ -1,0 +1,18 @@
+---
+// src/layouts/Layout.astro
+import '@/styles/global.css';
+---
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Luma</title>
+  </head>
+  <body class="bg-[#f8f9fa] text-zinc-900 font-sans antialiased min-h-screen flex">
+    <div class="fixed inset-0 opacity-40 pointer-events-none" 
+         style="background-image: radial-gradient(circle, #cbd5e1 1.5px, transparent 1.5px); background-size: 24px 24px;">
+    </div>
+    
+    <slot />
+  </body>
+</html>
+

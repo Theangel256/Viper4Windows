@@ -1,0 +1,18 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { AudioDSP } from '../components/AudioDSP';
+
+// Puedes definir valores iniciales aquí o traerlos de una API si fuera necesario
+const initialStatus = "Iniciando...";
+const handleRefresh = () => { console.log("Refresh"); };
+---
+
+<Layout>
+  <main>
+    <AudioDSP 
+      client:load 
+      systemStatus={initialStatus} 
+      onRefreshStatus={handleRefresh} 
+    />
+  </main>
+</Layout>
