@@ -190,65 +190,52 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 		return err
 	}
 
-	// CRITICAL: Audio engine runs as SYSTEM — DLL must be in System32
+	// STEP 1: Copiar DLL a System32 PRIMERO
 	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
-
-	// Copy DLL to System32 first
 	dllBytes, err := os.ReadFile(dllPath)
 	if err != nil {
-		return fmt.Errorf("failed to read DLL: %w", err)
+		return fmt.Errorf("failed to read DLL from %s: %w", dllPath, err)
 	}
 	if err := os.WriteFile(system32Path, dllBytes, 0644); err != nil {
-		return fmt.Errorf("failed to copy DLL to System32 (Admin required): %w", err)
+		return fmt.Errorf("failed to copy DLL to System32: %w", err)
 	}
-	log.Printf("✓ DLL deployed to System32: %s", system32Path)
+	log.Printf("✓ DLL copied to System32: %s", system32Path)
 
-	// Register APO CLSID
-	keyPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, keyPath, registry.ALL_ACCESS)
+	// STEP 2: Registrar APO con ruta de System32
+	apoPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoPath, registry.ALL_ACCESS)
 	if err != nil {
-		return fmt.Errorf("registry access denied: %w", err)
+		return fmt.Errorf("failed to create APO key: %w", err)
 	}
 	defer k.Close()
 
-	// Use System32 path — NOT the local app path
-	if err := k.SetStringValue("Library", system32Path); err != nil {
-		return fmt.Errorf("failed to set Library: %w", err)
-	}
-	if err := k.SetStringValue("FriendlyName", "ViPER4Windows APO"); err != nil {
-		return fmt.Errorf("failed to set FriendlyName: %w", err)
-	}
-	if err := k.SetDWordValue("Flags", 0x0000000d); err != nil {
-		return fmt.Errorf("failed to set Flags: %w", err)
-	}
+	k.SetStringValue("FriendlyName", "ViPER4Windows APO")
+	k.SetStringValue("Copyright", "ViPER's Audio")
+	k.SetStringValue("Library", system32Path) // ← System32, no ruta local
+	k.SetDWordValue("MajorVersion", 1)
+	k.SetDWordValue("MinorVersion", 0)
+	k.SetDWordValue("Flags", 0x0000000d)
 
-	// Register COM interface
-	ik, _, err := registry.CreateKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`, registry.ALL_ACCESS)
+	ik, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoPath+`\AudioInterface0`, registry.ALL_ACCESS)
 	if err != nil {
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath)
+		registry.DeleteKey(registry.LOCAL_MACHINE, apoPath)
 		return fmt.Errorf("failed to create AudioInterface0: %w", err)
 	}
 	defer ik.Close()
+	ik.SetStringValue("IID", ViPER_IID)
 
-	if err := ik.SetStringValue("IID", ViPER_IID); err != nil {
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`)
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath)
-		return fmt.Errorf("failed to set IID: %w", err)
-	}
-
-	// Also register under CLSID for COM lookup
+	// STEP 3: Registrar COM InprocServer32 (faltaba completamente)
 	comPath := `SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`
 	ck, _, err := registry.CreateKey(registry.LOCAL_MACHINE, comPath, registry.ALL_ACCESS)
 	if err != nil {
-		return fmt.Errorf("failed to register COM CLSID: %w", err)
+		return fmt.Errorf("failed to create COM InprocServer32: %w", err)
 	}
 	defer ck.Close()
+	ck.SetStringValue("", system32Path) // valor default = ruta DLL
+	ck.SetStringValue("ThreadingModel", "Both")
 
-	_ = ck.SetStringValue("", system32Path) // default value = DLL path
-	_ = ck.SetStringValue("ThreadingModel", "Both")
-
-	log.Printf("✓ APO registered successfully (CLSID: %s)", ViPER_CLSID)
-	log.Printf("✓ Library path: %s", system32Path)
+	log.Printf("✓ APO registered (CLSID: %s)", ViPER_CLSID)
+	log.Printf("✓ Library: %s", system32Path)
 	return nil
 }
 
