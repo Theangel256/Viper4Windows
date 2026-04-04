@@ -60,18 +60,11 @@ export function AudioDSP({ systemStatus, onRefreshStatus }: AudioDSPProps) {
 
   return (
     // Contenedor principal: Light Mode, Flex Row para el Sidebar
-    <div id="App" className="h-screen w-screen flex bg-background overflow-hidden relative gap-4">
+    <div id="App" className="h-screen w-screen flex bg-background overflow-hidden relative">
       {/* --- SIDEBAR IZQUIERDO --- */}
-      <motion.aside 
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="w-64 flex flex-col justify-between shrink-0 z-10"
-      >
-        <Sidebar />
-      </motion.aside>
-
+      <Sidebar />
       {/* --- CONTENIDO PRINCIPAL --- */}
-      <main className="flex-1 flex flex-col z-10 overflow-y-auto pr-2 custom-scrollbar"> 
+      <main className="flex-1 flex flex-col z-10 overflow-y-auto p-8 custom-scrollbar">
         {/* Barra superior de estado del driver */}
         <StatusHeader />
 
@@ -80,7 +73,7 @@ export function AudioDSP({ systemStatus, onRefreshStatus }: AudioDSPProps) {
           variants={containerVariants}
           initial="hidden"
           animate="show"
-          className="flex flex-col gap-5 pb-6"
+          className="flex flex-col gap-5 pb-6 mt-8 max-w-[1600px] mx-auto w-full"
         >
           {/* Master Controls */}
           <motion.section variants={itemVariants} className="w-full">

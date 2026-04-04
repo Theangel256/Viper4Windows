@@ -1,5 +1,6 @@
 import { useState, useEffect, memo } from "react";
 import { createPortal } from "react-dom";
+import { motion } from "framer-motion";
 import { useAudioStore } from "../store/audioStore";
 import { DSPButton } from "./ui/DSPButton";
 import { ThemeToggle } from "./ui/ThemeToggle.jsx"
@@ -123,9 +124,12 @@ export function Sidebar() {
 
   return (
     <>
-    <aside className={`fixed left-0 top-0 flex flex-col h-screen shrink-0 py-8 px-5 bg-transparent border-r border-zinc-200/50 dark:border-zinc-800/50 transition-all duration-300 ease-in-out ${
-          isCollapsed ? "w-[90px]" : "w-[230px]"
-        }`}>
+    <motion.aside initial={{ opacity: 0, x: -20 }} animate={{  opacity: 1, x: 0,width: isCollapsed ? 90 : 230 // Framer Motion maneja el ancho ahora
+  }}
+  transition={{ 
+    duration: 0.3, 
+    ease: "easeInOut" // Curva de aceleración suave
+  }} className="flex flex-col h-screen shrink-0 py-8 px-5 bg-transparent border-r border-zinc-200/50 dark:border-zinc-800/50 overflow-hidden z-10">
     {/* Logo y Botón de Contraer */}
     {/* REAJUSTADO: flex-col y gap cuando está colapsado para centrar */}
     <div className={`flex items-center mb-10 ${isCollapsed ? "flex-col gap-6" : "justify-between"}`}>
@@ -200,7 +204,7 @@ export function Sidebar() {
             {!isCollapsed && "Save Preset"}
           </DSPButton>
         </div>
-      </aside>
+      </motion.aside>
 
       {/* Renderizado de Modales con Portals */}
       <SavePresetModal 
