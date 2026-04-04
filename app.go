@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"golang.org/x/sys/windows/registry"
@@ -132,24 +132,34 @@ func defaultState() DSPState {
 type App struct {
 	ctx   context.Context
 	state DSPState
+	dsp   *DSPManager    // Maneja la memoria compartida (Hot Path)
+	drv   *DriverManager // Maneja el registro y servicios (Control Path)
 }
 
 // NewApp creates a new App instance, initializing the default DSP state.
 func NewApp() *App {
-	return &App{state: defaultState()}
+	return &App{
+		state: defaultState(),
+		dsp:   &DSPManager{},
+		drv:   &DriverManager{},
+	}
 }
 
 // startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Al arrancar, verificamos si el driver está OK
-	installed := a.CheckDriver()
-	if installed {
-		fmt.Println("Driver detectado correctamente en el arranque.")
-	} else {
-		fmt.Println("Driver no encontrado. Se requiere instalación.")
+	if err := a.dsp.InitSharedMemory(); err != nil {
+		log.Printf("⚠️ No se pudo conectar con el Driver (SharedMem): %v", err)
 	}
+	a.synchronize() // Carga inicial de parámetros
+
+	log.Printf("Backend iniciado. Estado del Driver: %v", a.CheckDriver())
+}
+
+// synchronize envía el estado actual de Go al driver de Windows
+func (a *App) synchronize() {
+	a.dsp.ApplyChanges(a.state)
 }
 
 // ── Manejo de Instancia Única ────────────────────────────────────────────────
@@ -166,113 +176,55 @@ func (a *App) OnSecondInstanceLaunch(data options.SecondInstanceData) {
 // ── APO Driver Management ─────────────────────────────────────────────────────
 
 // CheckDriver verifica si el registro existe Y si el archivo DLL físico está presente
+// Ahora delega la verificación al DriverManager.
 func (a *App) CheckDriver() bool {
-	apoKey := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`
-
-	// 1. Verificamos si la clave principal existe
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, apoKey, registry.QUERY_VALUE)
-	if err != nil {
-		return false
-	}
-	defer k.Close()
-
-	// 2. Leemos la ruta de la DLL que Windows está intentando cargar
-	dllPath, _, err := k.GetStringValue("Library")
-	if err != nil || dllPath == "" {
-		return false
-	}
-
-	// 3. Verificamos si el archivo realmente existe en el disco duro
-	if _, err := os.Stat(dllPath); os.IsNotExist(err) {
-		return false // El registro existe pero el archivo fue borrado/movido
-	}
-
-	return true
+	return a.drv.CheckInstallation()
 }
 
 // SetDriverStatus permite instalar o desinstalar el driver desde la App
 func (a *App) SetDriverStatus(install bool) bool {
 	if install {
 		log.Println("Iniciando instalación del driver APO...")
-		err := a.FixDriver()
+		exePath, err := os.Executable()
 		if err != nil {
-			log.Printf("Error instalando driver: %v\n", err)
+			log.Printf("failed to get executable path: %v", err)
+			return false
+		}
+		appDir := filepath.Dir(exePath)
+		driverPath := filepath.Join(appDir, "Hydrogen_Inst.dll")
+
+		log.Printf("Portable Mode: extracting driver to %s", driverPath)
+		if err := os.WriteFile(driverPath, driverBinary, 0644); err != nil {
+			log.Printf("failed to extract driver: %v", err)
+			return false
+		}
+
+		if err := a.drv.RegisterAPO(driverPath); err != nil {
+			log.Printf("failed to register APO: %v", err)
+			return false
+		}
+
+		if err := a.drv.RestartAudioEngine(); err != nil {
+			log.Printf("failed to restart audio engine: %v", err)
 			return false
 		}
 		return true
+
 	} else {
 		log.Println("Desinstalando driver APO...")
-		apoKey := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`
-
-		// Es buena práctica borrar primero las subclaves antes que la llave padre
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, apoKey+`\AudioInterface0`)
-		err := registry.DeleteKey(registry.LOCAL_MACHINE, apoKey)
-
-		// IMPORTANTÍSIMO: Reiniciar el servicio de audio para que Windows suelte la DLL
-		_ = a.RestartAudioServices()
-
-		return err == nil
+		return a.drv.UnregisterAPO() == nil && a.drv.RestartAudioEngine() == nil
 	}
 }
 
-// FixDriver handles extracting, registering, and patching the APO driver.
-func (a *App) FixDriver() error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	appDir := filepath.Dir(exePath)
-	driverPath := filepath.Join(appDir, "Hydrogen_Inst.dll")
+// FixDriver ha sido eliminada ya que su lógica se ha integrado en SetDriverStatus
+// y delegada al DriverManager.
 
-	log.Printf("Portable Mode: extracting driver to %s", driverPath)
-	err = os.WriteFile(driverPath, driverBinary, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to extract driver: %w", err)
-	}
+// registerAPO ha sido eliminada ya que su lógica se ha delegado al DriverManager.
 
-	// 1. Register APO Class with full local path
-	err = a.registerAPO(driverPath)
-	if err != nil {
-		return fmt.Errorf("failed to register APO: %w", err)
-	}
+// RestartAudioServices ha sido eliminada ya que su lógica se ha delegado al DriverManager.
 
-	// 2. Restart Audio Services
-	return a.RestartAudioServices()
-}
-
-func (a *App) registerAPO(driverPath string) error {
-	apoKey := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\{DA2FB532-3014-4B93-AD05-21B2C620F9C2}`
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoKey, registry.WRITE)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-
-	_ = k.SetStringValue("FriendlyName", "ViPER4Windows APO")
-	_ = k.SetStringValue("Copyright", "ViPER's Audio")
-	_ = k.SetDWordValue("MajorVersion", 1)
-	_ = k.SetDWordValue("MinorVersion", 0)
-	_ = k.SetDWordValue("Flags", 0x0000000d)
-	_ = k.SetStringValue("Library", driverPath)
-
-	// Create required interface subkey
-	interfaceKey, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoKey+`\AudioInterface0`, registry.WRITE)
-	if err == nil {
-		_ = interfaceKey.SetStringValue("IID", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}")
-		interfaceKey.Close()
-	}
-
-	return nil
-}
-
-// RestartAudioServices restarts Audiosrv and AudioEndpointBuilder.
-func (a *App) RestartAudioServices() error {
-	log.Println("Restarting Audio Services...")
-	_ = exec.Command("net", "stop", "Audiosrv", "/y").Run()
-	_ = exec.Command("net", "stop", "AudioEndpointBuilder", "/y").Run()
-	_ = exec.Command("net", "start", "AudioEndpointBuilder").Run()
-	_ = exec.Command("net", "start", "Audiosrv").Run()
-	return nil
+func (a *App) UnregisterAPO() error {
+	return a.drv.UnregisterAPO()
 }
 
 func (a *App) PatchDefaultEndpoint() error {
@@ -312,6 +264,7 @@ func (a *App) ToggleEnable(enabled bool) error {
 // GetDeviceStatus returns the current status (Depende de CheckDriver ahora para más robustez)
 func (a *App) GetDeviceStatus() (string, error) {
 	if a.CheckDriver() {
+		// Ahora CheckDriver usa a.drv.CheckInstallation()
 		return "Registered", nil
 	}
 	return "Driver Missing", nil
@@ -333,11 +286,13 @@ func (a *App) ResetState() DSPState {
 // SetMode switches between music / movie / freestyle.
 func (a *App) SetMode(mode string) {
 	a.state.Mode = mode
+	a.synchronize()
 }
 
 // SetPower toggles the master power switch in the state.
 func (a *App) SetPower(on bool) {
 	a.state.Master.Power = on
+	a.synchronize()
 }
 
 // SetPreVolume sets the pre-DSP volume in dB (range −40..+12).
@@ -396,9 +351,11 @@ func (a *App) SetEqBand(index int, db float64) {
 		for i := 0; i < 18; i++ {
 			params.EqBands[i] = float32(a.state.Equalizer[i])
 		}
+		paramsSize := unsafe.Sizeof(params)
+		paramsBytes := (*[1 << 30]byte)(unsafe.Pointer(&params))[:paramsSize:paramsSize]
 
 		// 2. Enviar a la memoria compartida (y loguear si hay error)
-		err := a.writeToSharedMemory(params)
+		err := a.writeToSharedMemory(paramsBytes)
 		if err != nil {
 			fmt.Printf("❌ ERROR APO: %v\n", err)
 		} else {
@@ -417,21 +374,30 @@ func (a *App) ResetEq() {
 // ── Presets Management ────────────────────────────────────────────────────────
 
 // presetsDir returns the OS-specific presets directory, creating it if needed.
-func presetsDir() (string, error) {
-	home, err := os.UserHomeDir()
+func getPresetsDir() string {
+	// 1. Obtenemos la ruta completa del ejecutable (.exe)
+	exePath, err := os.Executable()
 	if err != nil {
-		return "", err
+		log.Println("Error obteniendo la ruta del exe:", err)
+		return "presets" // Fallback a relativo si falla
 	}
-	dir := filepath.Join(home, "Viper4Windows", "presets")
-	return dir, os.MkdirAll(dir, 0755)
+
+	// 2. Obtenemos solo el directorio (quitamos el nombre del archivo)
+	exeDir := filepath.Dir(exePath)
+
+	// 3. Creamos la ruta final uniendo el directorio con la carpeta 'presets'
+	finalPath := filepath.Join(exeDir, "presets")
+
+	// 4. Nos aseguramos de que la carpeta exista
+	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
+		_ = os.MkdirAll(finalPath, 0755)
+	}
+	return finalPath
 }
 
 // SavePreset persists the current DSP state to a named JSON file.
 func (a *App) SavePreset(name string) error {
-	dir, err := presetsDir()
-	if err != nil {
-		return fmt.Errorf("presets dir: %w", err)
-	}
+	dir := getPresetsDir()
 	data, err := json.MarshalIndent(a.state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -442,10 +408,7 @@ func (a *App) SavePreset(name string) error {
 
 // LoadPreset reads a preset by name and returns the full DSP state.
 func (a *App) LoadPreset(name string) (DSPState, error) {
-	dir, err := presetsDir()
-	if err != nil {
-		return a.state, fmt.Errorf("presets dir: %w", err)
-	}
+	dir := getPresetsDir()
 	data, err := os.ReadFile(filepath.Join(dir, name+".json"))
 	if err != nil {
 		return a.state, fmt.Errorf("read preset: %w", err)
@@ -460,10 +423,7 @@ func (a *App) LoadPreset(name string) (DSPState, error) {
 
 // ListPresets returns the names of all saved presets.
 func (a *App) ListPresets() ([]string, error) {
-	dir, err := presetsDir()
-	if err != nil {
-		return nil, err
-	}
+	dir := getPresetsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
