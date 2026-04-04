@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -154,7 +155,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.synchronize() // Carga inicial de parámetros
 
-	log.Printf("Backend iniciado. Estado del Driver: %v", a.CheckDriver())
+	log.Printf("🤖 Backend iniciado. Estado del Driver: %v", a.CheckDriver())
 }
 
 // synchronize envía el estado actual de Go al driver de Windows
@@ -171,6 +172,50 @@ func (a *App) OnSecondInstanceLaunch(data options.SecondInstanceData) {
 
 	// Opcional: Avisar al frontend que alguien intentó abrir otra instancia
 	wailsRuntime.EventsEmit(a.ctx, "second_instance_attempt", data.Args)
+}
+
+// IsElevated checks if the process has administrative privileges
+func (dm *DriverManager) IsElevated() bool {
+	// Method 1: Token elevation (primary)
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err == nil {
+		defer token.Close()
+
+		var elevation TOKEN_ELEVATION
+		var returnedLen uint32
+		err = windows.GetTokenInformation(
+			token,
+			windows.TokenElevation,
+			(*byte)(unsafe.Pointer(&elevation)),
+			uint32(unsafe.Sizeof(elevation)),
+			&returnedLen,
+		)
+		if err == nil {
+			return elevation.TokenIsElevated != 0
+		}
+	}
+
+	// Method 2: Fallback — try opening a protected registry key
+	// If we can write to HKLM, we're elevated
+	k, err := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
+		registry.SET_VALUE,
+	)
+	if err == nil {
+		k.Close()
+		return true
+	}
+
+	return false
+}
+
+// RequireAdmin validates administrative privileges before operations
+func (dm *DriverManager) RequireAdmin() error {
+	if !dm.IsElevated() {
+		return fmt.Errorf("ACCESS_DENIED: Administrator privileges required.\nRight-click the application and select 'Run as Administrator'")
+	}
+	return nil
 }
 
 // ── APO Driver Management ─────────────────────────────────────────────────────
@@ -198,7 +243,10 @@ func (a *App) SetDriverStatus(install bool) bool {
 			log.Printf("failed to extract driver: %v", err)
 			return false
 		}
-
+		system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
+		if err := os.WriteFile(system32Path, driverBinary, 0644); err != nil {
+			log.Printf("⚠️ Could not copy to System32: %v", err)
+		}
 		if err := a.drv.RegisterAPO(driverPath); err != nil {
 			log.Printf("failed to register APO: %v", err)
 			return false
@@ -335,28 +383,23 @@ func (a *App) SetReverbPanel(p ReverbPanelState) {
 	a.state.ReverbPanel = p
 }
 
-// SetEqBand actualiza una banda específica
 func (a *App) SetEqBand(index int, db float64) {
 	if index >= 0 && index < len(a.state.Equalizer) {
 		a.state.Equalizer[index] = clamp(db, -12, 12)
 
-		// 1. Construir el paquete de datos para el APO
 		params := VIPER_DSP_PARAMS{
-			Enabled:   1.0, // Forzar encendido para probar
+			Enabled:   1.0,
 			PreVol:    float32(a.state.Master.PreVol),
 			PostVol:   float32(a.state.Master.PostVol),
-			EqEnabled: 1.0, // Ecualizador encendido
+			EqEnabled: 1.0,
 		}
 
 		for i := 0; i < 18; i++ {
 			params.EqBands[i] = float32(a.state.Equalizer[i])
 		}
-		paramsSize := unsafe.Sizeof(params)
-		paramsBytes := (*[1 << 30]byte)(unsafe.Pointer(&params))[:paramsSize:paramsSize]
 
-		// 2. Enviar a la memoria compartida (y loguear si hay error)
-		err := a.writeToSharedMemory(paramsBytes)
-		if err != nil {
+		// Pasar directamente como *VIPER_DSP_PARAMS, sin conversión a []byte
+		if err := a.writeToSharedMemory(&params); err != nil {
 			fmt.Printf("❌ ERROR APO: %v\n", err)
 		} else {
 			fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
@@ -369,6 +412,10 @@ func (a *App) ResetEq() {
 	for i := range a.state.Equalizer {
 		a.state.Equalizer[i] = 0
 	}
+}
+
+func (a *App) writeToSharedMemory(params *VIPER_DSP_PARAMS) error {
+	return a.dsp.WriteParams(params)
 }
 
 // ── Presets Management ────────────────────────────────────────────────────────

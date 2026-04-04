@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -16,42 +20,121 @@ const (
 
 	// Registry paths for Windows Audio Endpoints
 	AudioRenderKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render`
+
+	// Property keys for device metadata
+	PKEY_DeviceFriendlyName = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
 )
+
+// AudioEndpoint represents a Windows audio render device
+type AudioEndpoint struct {
+	GUID         string
+	FriendlyName string
+	IsDefault    bool
+	HasViPER     bool
+}
+
+type TOKEN_ELEVATION struct {
+	TokenIsElevated uint32
+}
 
 // DriverManager handles the registration and lifecycle of the APO.
 // Corresponds to the 'Installer' logic in ViPERDSP/Alpha.
 type DriverManager struct{}
 
-// RegisterAPO injects the APO CLSID into the Windows Registry.
-// This allows the Audio Engine to "see" the ViPER processor.
-func (dm *DriverManager) RegisterAPO(dllPath string) error {
-	keyPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, keyPath, registry.ALL_ACCESS)
+// ListAudioEndpoints enumerates all available audio render devices
+func (dm *DriverManager) ListAudioEndpoints() ([]AudioEndpoint, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, AudioRenderKey, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
-		return fmt.Errorf("registry access denied (run as admin): %w", err)
+		return nil, fmt.Errorf("cannot access audio devices registry: %w", err)
 	}
 	defer k.Close()
 
-	_ = k.SetStringValue("Library", dllPath)
-	_ = k.SetStringValue("FriendlyName", "ViPER4Windows APO")
-	_ = k.SetDWordValue("Flags", 0x0000000d) // APO_FLAG_INPLACE | APO_FLAG_SAMPLESPERFRAME_MUST_MATCH
+	names, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("cannot enumerate subkeys: %w", err)
+	}
 
-	// Register Interface
-	ik, _, _ := registry.CreateKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`, registry.ALL_ACCESS)
-	defer ik.Close()
-	_ = ik.SetStringValue("IID", ViPER_IID)
+	endpoints := make([]AudioEndpoint, 0, len(names))
+	for _, guid := range names {
+		if ep, err := dm.readEndpointInfo(guid); err == nil {
+			endpoints = append(endpoints, ep)
+		}
+	}
 
-	return nil
+	return endpoints, nil
+}
+
+// readEndpointInfo retrieves metadata for a specific audio endpoint
+func (dm *DriverManager) readEndpointInfo(guid string) (AudioEndpoint, error) {
+	// Read friendly name from Properties
+	propsPath := fmt.Sprintf(`%s\%s\Properties`, AudioRenderKey, guid)
+	pk, err := registry.OpenKey(registry.LOCAL_MACHINE, propsPath, registry.QUERY_VALUE)
+
+	name := "Unknown Device"
+	if err == nil {
+		if val, _, err := pk.GetStringValue(PKEY_DeviceFriendlyName); err == nil {
+			name = val
+		}
+		pk.Close()
+	}
+
+	// Check if ViPER is already attached
+	fxPath := fmt.Sprintf(`%s\%s\FxProperties`, AudioRenderKey, guid)
+	fxk, err := registry.OpenKey(registry.LOCAL_MACHINE, fxPath, registry.QUERY_VALUE)
+
+	hasViPER := false
+	if err == nil {
+		lfxKey := "{d04e05a6-594b-4fb6-a80d-01af5eedf162},0"
+		if val, _, err := fxk.GetStringValue(lfxKey); err == nil && val == ViPER_CLSID {
+			hasViPER = true
+		}
+		fxk.Close()
+	}
+
+	return AudioEndpoint{
+		GUID:         guid,
+		FriendlyName: name,
+		IsDefault:    false, // Populated by GetDefaultEndpoint
+		HasViPER:     hasViPER,
+	}, nil
+}
+
+// GetDefaultEndpoint retrieves the GUID of the default playback device
+func (dm *DriverManager) GetDefaultEndpoint() (string, error) {
+	// Option 1: Read from User's Sound Mapper (unreliable)
+	k, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Multimedia\Sound Mapper`, registry.QUERY_VALUE)
+
+	if err == nil {
+		defer k.Close()
+		if playback, _, err := k.GetStringValue("Playback"); err == nil {
+			return playback, nil
+		}
+	}
+
+	// Option 2: Fallback - find first device (requires better detection)
+	endpoints, err := dm.ListAudioEndpoints()
+	if err != nil || len(endpoints) == 0 {
+		return "", fmt.Errorf("no audio endpoints found")
+	}
+
+	// For now, return first available (should use IMMDeviceEnumerator COM API)
+	log.Printf("⚠️ Warning: Using first available endpoint as default (implement COM detection)")
+	return endpoints[0].GUID, nil
 }
 
 // AttachToEndpoint binds the APO to a specific Audio Device (GUID).
 // In ViPERFX_RE, this involves modifying the Multi-Endpoint (MME) properties.
 func (dm *DriverManager) AttachToEndpoint(endpointID string) error {
+	if err := dm.RequireAdmin(); err != nil {
+		return err
+	}
+
 	// Path: HKLM\...\MMDevices\Audio\Render\{GUID}\FxProperties
 	propPath := fmt.Sprintf(`%s\%s\FxProperties`, AudioRenderKey, endpointID)
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, propPath, registry.SET_VALUE)
 	if err != nil {
-		return err
+		return fmt.Errorf("endpoint not found or access denied: %w", err)
 	}
 	defer k.Close()
 
@@ -59,41 +142,202 @@ func (dm *DriverManager) AttachToEndpoint(endpointID string) error {
 	// {d04e05a6-594b-4fb6-a80d-01af5eedf162},0 = LFX (Local Effect)
 	// {d04e05a6-594b-4fb6-a80d-01af5eedf162},1 = GFX (Global Effect)
 	lfxKey := "{d04e05a6-594b-4fb6-a80d-01af5eedf162},0"
-	return k.SetStringValue(lfxKey, ViPER_CLSID)
+	if err := k.SetStringValue(lfxKey, ViPER_CLSID); err != nil {
+		return fmt.Errorf("failed to set LFX CLSID: %w", err)
+	}
+
+	log.Printf("✓ APO attached to endpoint: %s", endpointID)
+	return nil
+}
+
+// AttachToDefaultEndpoint simplifies the most common setup scenario
+func (dm *DriverManager) AttachToDefaultEndpoint() error {
+	guid, err := dm.GetDefaultEndpoint()
+	if err != nil {
+		return fmt.Errorf("cannot detect default endpoint: %w", err)
+	}
+
+	log.Printf("Detected default endpoint: %s", guid)
+	return dm.AttachToEndpoint(guid)
+}
+
+// DetachFromEndpoint removes ViPER APO from a specific endpoint
+func (dm *DriverManager) DetachFromEndpoint(endpointID string) error {
+	if err := dm.RequireAdmin(); err != nil {
+		return err
+	}
+
+	propPath := fmt.Sprintf(`%s\%s\FxProperties`, AudioRenderKey, endpointID)
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, propPath, registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("endpoint not found: %w", err)
+	}
+	defer k.Close()
+
+	lfxKey := "{d04e05a6-594b-4fb6-a80d-01af5eedf162},0"
+	if err := k.DeleteValue(lfxKey); err != nil && err != registry.ErrNotExist {
+		return fmt.Errorf("failed to remove APO: %w", err)
+	}
+
+	log.Printf("✓ APO detached from endpoint: %s", endpointID)
+	return nil
+}
+
+// RegisterAPO injects the APO CLSID into the Windows Registry.
+// This allows the Audio Engine to "see" the ViPER processor.
+func (dm *DriverManager) RegisterAPO(dllPath string) error {
+	if err := dm.RequireAdmin(); err != nil {
+		return err
+	}
+
+	// CRITICAL: Audio engine runs as SYSTEM — DLL must be in System32
+	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
+
+	// Copy DLL to System32 first
+	dllBytes, err := os.ReadFile(dllPath)
+	if err != nil {
+		return fmt.Errorf("failed to read DLL: %w", err)
+	}
+	if err := os.WriteFile(system32Path, dllBytes, 0644); err != nil {
+		return fmt.Errorf("failed to copy DLL to System32 (Admin required): %w", err)
+	}
+	log.Printf("✓ DLL deployed to System32: %s", system32Path)
+
+	// Register APO CLSID
+	keyPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, keyPath, registry.ALL_ACCESS)
+	if err != nil {
+		return fmt.Errorf("registry access denied: %w", err)
+	}
+	defer k.Close()
+
+	// Use System32 path — NOT the local app path
+	if err := k.SetStringValue("Library", system32Path); err != nil {
+		return fmt.Errorf("failed to set Library: %w", err)
+	}
+	if err := k.SetStringValue("FriendlyName", "ViPER4Windows APO"); err != nil {
+		return fmt.Errorf("failed to set FriendlyName: %w", err)
+	}
+	if err := k.SetDWordValue("Flags", 0x0000000d); err != nil {
+		return fmt.Errorf("failed to set Flags: %w", err)
+	}
+
+	// Register COM interface
+	ik, _, err := registry.CreateKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`, registry.ALL_ACCESS)
+	if err != nil {
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath)
+		return fmt.Errorf("failed to create AudioInterface0: %w", err)
+	}
+	defer ik.Close()
+
+	if err := ik.SetStringValue("IID", ViPER_IID); err != nil {
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`)
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath)
+		return fmt.Errorf("failed to set IID: %w", err)
+	}
+
+	// Also register under CLSID for COM lookup
+	comPath := `SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`
+	ck, _, err := registry.CreateKey(registry.LOCAL_MACHINE, comPath, registry.ALL_ACCESS)
+	if err != nil {
+		return fmt.Errorf("failed to register COM CLSID: %w", err)
+	}
+	defer ck.Close()
+
+	_ = ck.SetStringValue("", system32Path) // default value = DLL path
+	_ = ck.SetStringValue("ThreadingModel", "Both")
+
+	log.Printf("✓ APO registered successfully (CLSID: %s)", ViPER_CLSID)
+	log.Printf("✓ Library path: %s", system32Path)
+	return nil
+}
+
+// UnregisterAPO removes all APO registry entries cleanly
+func (dm *DriverManager) UnregisterAPO() error {
+	if err := dm.RequireAdmin(); err != nil {
+		return err
+	}
+
+	paths := []string{
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID + `\AudioInterface0`,
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID,
+		`SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`,
+		`SOFTWARE\Classes\CLSID\` + ViPER_CLSID,
+	}
+
+	for _, path := range paths {
+		if err := registry.DeleteKey(registry.LOCAL_MACHINE, path); err != nil {
+			log.Printf("⚠️ Could not delete %s: %v", path, err)
+		}
+	}
+
+	// Remove DLL from System32
+	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
+	if err := os.Remove(system32Path); err != nil && !os.IsNotExist(err) {
+		log.Printf("⚠️ Could not remove DLL from System32: %v", err)
+	}
+
+	log.Printf("✓ APO unregistered successfully")
+	return nil
 }
 
 // RestartAudioEngine forces Windows to reload APOs by bouncing Audiosrv.
 func (dm *DriverManager) RestartAudioEngine() error {
-	// 'net stop' is used because it handles dependency service AudioEndpointBuilder
-	log.Println("Restarting Audio Services to apply driver changes...")
-	_ = exec.Command("net", "stop", "Audiosrv", "/y").Run()
-	err := exec.Command("net", "start", "Audiosrv").Run()
-	if err != nil {
-		return fmt.Errorf("failed to start Audiosrv: %w", err)
-	}
-	return exec.Command("net", "start", "AudioEndpointBuilder").Run()
-}
+	stopOrder := []string{"AudioEndpointBuilder", "AudioSrv"}
+	startOrder := []string{"AudioSrv", "AudioEndpointBuilder"}
 
-// UnregisterAPO removes the APO CLSID from the Windows Registry.
-func (dm *DriverManager) UnregisterAPO() error {
-	log.Println("Unregistering APO...")
-	keyPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
-
-	// It's good practice to delete subkeys before the parent key
-	_ = registry.DeleteKey(registry.LOCAL_MACHINE, keyPath+`\AudioInterface0`)
-	err := registry.DeleteKey(registry.LOCAL_MACHINE, keyPath)
-	if err != nil {
-		return fmt.Errorf("failed to unregister APO: %w", err)
+	// Stop services
+	for _, svc := range stopOrder {
+		exec.Command("sc", "stop", svc).Run()
 	}
+
+	// Wait until AudioSrv is fully stopped (max 6s)
+	for i := 0; i < 12; i++ {
+		time.Sleep(500 * time.Millisecond)
+		out, _ := exec.Command("sc", "query", "AudioSrv").Output()
+		if strings.Contains(string(out), "STOPPED") {
+			break
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// Start services
+	for _, svc := range startOrder {
+		out, err := exec.Command("sc", "start", svc).CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if err != nil {
+			// "already started" is not a real error
+			if strings.Contains(output, "1056") || strings.Contains(output, "already") {
+				log.Printf("✓ %s was already running", svc)
+			} else {
+				log.Printf("⚠️ %s start failed: %v", svc, err)
+			}
+		} else {
+			log.Printf("✓ %s started", svc)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	time.Sleep(1 * time.Second)
 	return nil
 }
 
 // CheckInstallation verifies if the APO is registered and the DLL exists.
 func (dm *DriverManager) CheckInstallation() bool {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\`+ViPER_CLSID, registry.QUERY_VALUE)
+	keyPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, keyPath, registry.QUERY_VALUE)
 	if err != nil {
 		return false
 	}
 	defer k.Close()
-	return true
+
+	// Additionally verify DLL path is valid
+	if dllPath, _, err := k.GetStringValue("Library"); err == nil {
+		if _, err := os.Stat(dllPath); err == nil {
+			return true
+		}
+		log.Printf("⚠️ APO registered but DLL not found: %s", dllPath)
+	}
+
+	return false
 }

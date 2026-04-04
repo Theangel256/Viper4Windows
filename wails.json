@@ -3,7 +3,7 @@
     "outputfilename": "Viper4Windows",
     "frontend:install": "bun install",
     "frontend:build": "bun run build",
-    "frontend:dev:command": "bun run dev",
+    "frontend:dev:watcher": "bun run dev",
     "frontend:dir": "frontend",
     "wailsjsdir": "./frontend/src",
     "assetdir": "frontend/dist",

@@ -18,6 +18,7 @@ import { Surround3D }     from "./panels/Surround3D";
 import { ReverbSidebar }  from "./panels/ReverbSidebar";
 import { ReverbPanel }    from "./panels/ReverbPanel";
 import { DSPButton }      from "./ui/DSPButton";
+import AudioDevices from "./panels/AudioDevices";
 import { useAudioStore }  from "../store/audioStore";
 import { Sidebar } from "./Sidebar";
 import { Equalizer } from "./Equalizer";
@@ -94,6 +95,7 @@ export function AudioDSP({ systemStatus, onRefreshStatus }: AudioDSPProps) {
           {/* Footer: EQ y Compressor */}
           <motion.footer variants={itemVariants} className="grid grid-cols-2 gap-5 mt-2">
           <Equalizer />
+          <AudioDevices />
           </motion.footer>
 
         </motion.div>
