@@ -1,7 +1,7 @@
 {
   "name": "Viper4Windows FX",
   "type": "module",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "engines": {
     "node": ">=22.12.0"
   },
