@@ -190,8 +190,8 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 		return err
 	}
 
-	// STEP 1: Copiar DLL a System32 PRIMERO
-	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
+	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", filepath.Base(dllPath))
+
 	dllBytes, err := os.ReadFile(dllPath)
 	if err != nil {
 		return fmt.Errorf("failed to read DLL from %s: %w", dllPath, err)
@@ -201,7 +201,7 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 	}
 	log.Printf("✓ DLL copied to System32: %s", system32Path)
 
-	// STEP 2: Registrar APO con ruta de System32
+	// APO registration
 	apoPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoPath, registry.ALL_ACCESS)
 	if err != nil {
@@ -211,7 +211,7 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 
 	k.SetStringValue("FriendlyName", "ViPER4Windows APO")
 	k.SetStringValue("Copyright", "ViPER's Audio")
-	k.SetStringValue("Library", system32Path) // ← System32, no ruta local
+	k.SetStringValue("Library", system32Path)
 	k.SetDWordValue("MajorVersion", 1)
 	k.SetDWordValue("MinorVersion", 0)
 	k.SetDWordValue("Flags", 0x0000000d)
@@ -224,14 +224,14 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 	defer ik.Close()
 	ik.SetStringValue("IID", ViPER_IID)
 
-	// STEP 3: Registrar COM InprocServer32 (faltaba completamente)
+	// COM InprocServer32
 	comPath := `SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`
 	ck, _, err := registry.CreateKey(registry.LOCAL_MACHINE, comPath, registry.ALL_ACCESS)
 	if err != nil {
 		return fmt.Errorf("failed to create COM InprocServer32: %w", err)
 	}
 	defer ck.Close()
-	ck.SetStringValue("", system32Path) // valor default = ruta DLL
+	ck.SetStringValue("", system32Path)
 	ck.SetStringValue("ThreadingModel", "Both")
 
 	log.Printf("✓ APO registered (CLSID: %s)", ViPER_CLSID)
@@ -245,11 +245,14 @@ func (dm *DriverManager) UnregisterAPO() error {
 		return err
 	}
 
+	apoPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\`
+	comPath := `SOFTWARE\Classes\CLSID\`
+
 	paths := []string{
-		`SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID + `\AudioInterface0`,
-		`SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID,
-		`SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`,
-		`SOFTWARE\Classes\CLSID\` + ViPER_CLSID,
+		apoPath + ViPER_CLSID + `\AudioInterface0`,
+		apoPath + ViPER_CLSID,
+		comPath + ViPER_CLSID + `\InprocServer32`,
+		comPath + ViPER_CLSID,
 	}
 
 	for _, path := range paths {
@@ -258,13 +261,12 @@ func (dm *DriverManager) UnregisterAPO() error {
 		}
 	}
 
-	// Remove DLL from System32
 	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
 	if err := os.Remove(system32Path); err != nil && !os.IsNotExist(err) {
 		log.Printf("⚠️ Could not remove DLL from System32: %v", err)
 	}
 
-	log.Printf("✓ APO unregistered successfully")
+	log.Printf("✓ APO unregistered (CLSID: %s)", ViPER_CLSID)
 	return nil
 }
 
@@ -298,6 +300,7 @@ func (dm *DriverManager) RestartAudioEngine() error {
 				log.Printf("✓ %s was already running", svc)
 			} else {
 				log.Printf("⚠️ %s start failed: %v", svc, err)
+				return fmt.Errorf("%s start failed: %v", svc, err)
 			}
 		} else {
 			log.Printf("✓ %s started", svc)
@@ -305,7 +308,17 @@ func (dm *DriverManager) RestartAudioEngine() error {
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	// Verify services are running
 	time.Sleep(1 * time.Second)
+	for _, svc := range startOrder {
+		out, err := exec.Command("sc", "query", svc).Output()
+		if err != nil || !strings.Contains(string(out), "RUNNING") {
+			log.Printf("⚠️ %s failed to start properly", svc)
+			return fmt.Errorf("%s is not running after restart", svc)
+		}
+	}
+
+	log.Printf("✓ Audio engine restart completed successfully")
 	return nil
 }
 

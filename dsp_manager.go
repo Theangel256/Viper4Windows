@@ -4,9 +4,18 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+)
+
+var (
+	modadvapi32                      = syscall.NewLazyDLL("advapi32.dll")
+	procInitializeSecurityDescriptor = modadvapi32.NewProc("InitializeSecurityDescriptor")
+	procSetSecurityDescriptorDacl    = modadvapi32.NewProc("SetSecurityDescriptorDacl")
+	modKernel32                      = windows.NewLazySystemDLL("kernel32.dll")
+	procOpenFileMapping              = modKernel32.NewProc("OpenFileMappingW")
 )
 
 // VIPER_DSP_PARAMS must match exactly the memory layout of ViPERFX_RE (DSP.h)
@@ -94,43 +103,75 @@ type DSPManager struct {
 	activeBuffer uint32 // 0 = front active, 1 = back active
 }
 
+const SECURITY_DESCRIPTOR_REVISION = 1
+
 // InitSharedMemory opens or creates the communication channel with the APO.
 // This function validates that the APO is registered before proceeding.
 func (dm *DSPManager) InitSharedMemory() error {
-	// Validate APO installation first
+	// 1. Validar instalación del APO
 	drv := &DriverManager{}
 	if !drv.CheckInstallation() {
-		return fmt.Errorf("APO not installed - please install the driver first using SetDriverStatus(true)")
+		return fmt.Errorf("APO not installed - please install the driver first")
 	}
 
 	namePtr, _ := windows.UTF16PtrFromString(SharedMemName)
 
-	// Try to open existing mapping first (if APO already created it)
-	h, err := OpenFileMapping(
-		windows.FILE_MAP_WRITE,
-		false,
-		namePtr,
-	)
+	// 2. Intentar abrir el mapeo existente primero
+	h, err := OpenFileMapping(windows.FILE_MAP_WRITE, false, namePtr)
 
 	if err != nil {
-		// If it doesn't exist, create it ourselves
+		log.Printf("Shared memory no encontrada, creando una nueva con permisos globales...")
+
+		// 3. Configurar Atributos de Seguridad (NULL DACL)
+		// Creamos un buffer para el descriptor de seguridad
+		sd := make([]byte, 64)
+
+		// InitializeSecurityDescriptor
+		ret, _, err := procInitializeSecurityDescriptor.Call(
+			uintptr(unsafe.Pointer(&sd[0])),
+			uintptr(SECURITY_DESCRIPTOR_REVISION),
+		)
+		if ret == 0 {
+			return fmt.Errorf("failed to init security descriptor: %v", err)
+		}
+
+		// SetSecurityDescriptorDacl
+		ret, _, err = procSetSecurityDescriptorDacl.Call(
+			uintptr(unsafe.Pointer(&sd[0])),
+			uintptr(1), // TRUE
+			uintptr(0), // NULL DACL (Acceso total)
+			uintptr(0), // FALSE
+		)
+		if ret == 0 {
+			return fmt.Errorf("failed to set NULL DACL: %v", err)
+		}
+
+		// 4. Construir SecurityAttributes con el Type Cast correcto
+		sa := &windows.SecurityAttributes{
+			Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+			// CONVERSIÓN CRÍTICA: Convertimos el puntero del buffer al tipo esperado por la struct
+			SecurityDescriptor: (*windows.SECURITY_DESCRIPTOR)(unsafe.Pointer(&sd[0])),
+			InheritHandle:      0,
+		}
+
+		// 5. Crear el File Mapping
 		h, err = windows.CreateFileMapping(
 			windows.InvalidHandle,
-			nil,
+			sa,
 			windows.PAGE_READWRITE,
 			0,
-			SharedMemSize,
+			uint32(SharedMemSize),
 			namePtr,
 		)
 		if err != nil {
 			return fmt.Errorf("could not create shared memory: %w", err)
 		}
-		log.Printf("✓ Created new shared memory mapping")
+		log.Printf("✓ Nueva shared memory creada exitosamente")
 	} else {
-		log.Printf("✓ Opened existing shared memory mapping")
+		log.Printf("✓ Shared memory existente abierta")
 	}
 
-	// Map the file into our address space
+	// 6. Mapear la vista del archivo
 	addr, err := windows.MapViewOfFile(h, windows.FILE_MAP_WRITE, 0, 0, 0)
 	if err != nil {
 		windows.CloseHandle(h)
@@ -139,21 +180,22 @@ func (dm *DSPManager) InitSharedMemory() error {
 
 	dm.handle = h
 	dm.dataPtr = addr
-	// Project our Go struct onto the raw memory address
+	// #nosec G103 -- Safe: casting mapped shared memory to struct pointer
 	dm.params = (*VIPER_DSP_PARAMS)(unsafe.Pointer(addr))
 	dm.connected = true
 
-	// Validate struct size at runtime
+	// 7. Validar tamaño
 	actualSize := unsafe.Sizeof(*dm.params)
-	if actualSize != SharedMemSize {
+	if actualSize != uintptr(SharedMemSize) {
 		dm.Close()
-		return fmt.Errorf("CRITICAL: struct size mismatch - Go struct is %d bytes but expected %d bytes (check alignment/padding)",
+		return fmt.Errorf("CRITICAL: struct size mismatch - Go %d vs Expected %d",
 			actualSize, SharedMemSize)
 	}
 
-	log.Printf("✓ Shared memory initialized successfully (validated %d bytes)", SharedMemSize)
+	log.Printf("✓ Shared memory lista (Addr: %v)", addr)
 	return nil
 }
+
 func (dm *DSPManager) WriteParams(params *VIPER_DSP_PARAMS) error {
 	if dm.params == nil {
 		return fmt.Errorf("shared memory not initialized")
@@ -161,11 +203,6 @@ func (dm *DSPManager) WriteParams(params *VIPER_DSP_PARAMS) error {
 	*dm.params = *params
 	return nil
 }
-
-var (
-	modKernel32         = windows.NewLazySystemDLL("kernel32.dll")
-	procOpenFileMapping = modKernel32.NewProc("OpenFileMappingW")
-)
 
 func OpenFileMapping(access uint32, inheritHandle bool, name *uint16) (windows.Handle, error) {
 	inherit := uintptr(0)

@@ -46,11 +46,12 @@ declare global {
 }
 
 /** Safely call a Wails Go method. Returns false on failure. */
-async function go<T>(fn: () => Promise<T>): Promise<T | null> {
+async function go<T>(fn: () => Promise<T>, onError?: () => void): Promise<T | null> {
   try {
     return await fn();
   } catch (e) {
     console.error("[Wails bridge]", e);
+    if (onError) onError();
     return null;
   }
 }
@@ -225,11 +226,15 @@ export const useAudioStore = create<AudioStore>()(
     // ── Eq ──────────────────────────────────────────────────────────────────
   setEqBand(index, db) {
     set((s) => {
+      const prevEq = [...s.equalizer];
       const nextEq = [...s.equalizer];
       nextEq[index] = db;
       
       // Enviamos el cambio a Go de forma optimista
-      go(() => window.go.main.App.SetEqBand(index, db));
+      go(() => window.go.main.App.SetEqBand(index, db), () => {
+        // Rollback on error
+        set({ equalizer: prevEq });
+      });
       
       return { equalizer: nextEq };
     });

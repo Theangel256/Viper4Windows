@@ -1,6 +1,8 @@
-import { memo } from "react";
+import { memo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAudioStore } from "../store/audioStore";
 import { DSPSlider } from "./ui/DSPSlider";
+import { DSPButton } from "./ui/DSPButton";
 import { Activity, RotateCcw, Save } from "lucide-react";
 
 // Definimos las frecuencias estándar para un ecualizador de 18 bandas
@@ -12,37 +14,51 @@ const BANDS = [
 
 export const Equalizer = memo(() => {
   // Nota: Deberás añadir 'equalizer' y 'setEqBand' a tu interface AudioStore
-  const { equalizer, setEqBand, resetEq } = useAudioStore();
+  const { equalizer, setEqBand, resetEq, savePreset } = useAudioStore();
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [presetName, setPresetName] = useState("");
+
+  const handleSavePreset = () => {
+    if (presetName.trim()) {
+      savePreset(presetName.trim());
+      setPresetName("");
+      setShowSaveModal(false);
+    }
+  };
 
   return (
-    <section className="bg-white dark:bg-zinc-900 rounded-3xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 w-full relative">
-      {/* Header del Ecualizador */}
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-purple-500/10 rounded-xl">
-            <Activity className="text-purple-500" size={20} />
+    <>
+      <section className="bg-white dark:bg-zinc-900 rounded-3xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 w-full relative">
+        {/* Header del Ecualizador */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-purple-500/10 rounded-xl">
+              <Activity className="text-purple-500" size={20} />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-zinc-800 dark:text-zinc-100 leading-none">
+                Equalizer
+              </h2>
+              <p className="text-[10px] text-zinc-400 uppercase tracking-widest mt-1 font-bold">
+                18-Band Precision Control
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-lg font-bold text-zinc-800 dark:text-zinc-100 leading-none">
-              Equalizer
-            </h2>
-            <p className="text-[10px] text-zinc-400 uppercase tracking-widest mt-1 font-bold">
-              18-Band Precision Control
-            </p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={() => resetEq?.()}
-            className="p-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
-            title="Reset to 0dB"
-          >
-            <RotateCcw size={18} />
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-2xl text-xs font-bold hover:opacity-90 transition-opacity">
-            <Save size={14} /> SAVE PRESET
-          </button>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => resetEq?.()}
+              className="p-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+              title="Reset to 0dB"
+            >
+              <RotateCcw size={18} />
+            </button>
+            <button 
+              onClick={() => setShowSaveModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-2xl text-xs font-bold hover:opacity-90 transition-opacity"
+            >
+              <Save size={14} /> SAVE PRESET
+            </button>
         </div>
       </div>
 
@@ -87,6 +103,31 @@ export const Equalizer = memo(() => {
       {/* Línea de referencia de 0dB */}
       <div className="absolute left-0 right-0 top-[calc(50%+12px)] h-[1px] bg-zinc-100 dark:bg-zinc-800/50 pointer-events-none z-0" />
     </section>
+
+    {/* Save Preset Modal */}
+    {showSaveModal && typeof document !== 'undefined' && createPortal(
+      <div className="fixed inset-0 z-[100] flex items-center justify-center">
+        <div className="absolute inset-0 bg-zinc-950/40 transition-opacity" onClick={() => setShowSaveModal(false)} />
+        <div className="relative bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-6 w-[320px] shadow-2xl animate-in fade-in zoom-in duration-300">
+          <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100 mb-4">Save Equalizer Preset</h3>
+          <input
+            autoFocus
+            type="text"
+            placeholder="Enter preset name..."
+            value={presetName}
+            onChange={(e) => setPresetName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()}
+            className="w-full px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-sm outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all mb-4"
+          />
+          <div className="flex gap-3">
+            <button className="flex-1 py-2.5 text-sm font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors" onClick={() => setShowSaveModal(false)}>Cancel</button>
+            <DSPButton variant="default" className="flex-1 justify-center" onClick={handleSavePreset}>Save</DSPButton>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+  </>
   );
 });
 

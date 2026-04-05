@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Power, 
@@ -31,6 +31,11 @@ interface AudioDSPProps {
 export function AudioDSP({ systemStatus, onRefreshStatus }: AudioDSPProps) {
   const [activeMode, setActiveMode] = useState('Freestyle');
   const setDriverStatus = useAudioStore((state) => state.setDriverStatus);
+  const init = useAudioStore((state) => state.init);
+
+  useEffect(() => {
+    init();
+  }, [init]);
   const modes = [
     { id: 'Music Mode', icon: Music },
     { id: 'Movie Mode', icon: Film },

@@ -72,22 +72,25 @@ func (a *App) InstallAPOOnDevice(deviceID, deviceType string) error {
 	}
 
 	fxPath := basePath + `\` + deviceID + `\FxProperties`
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, fxPath,
-		registry.SET_VALUE|registry.QUERY_VALUE)
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, fxPath, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("failed to open FxProperties (Admin required): %w", err)
+		return fmt.Errorf("FxProperties access denied (Admin required): %w", err)
 	}
 	defer k.Close()
 
-	// Windows 10/11 — SFX + MFX + EFX
-	for _, key := range []string{pkeyFXStreamEffect, pkeyFXModeEffect, pkeyFXEndpoint} {
+	for _, key := range []string{
+		pkeyFXPreMix,       // ,0 legacy
+		pkeyFXPostMix,      // ,1 legacy
+		pkeyFXStreamEffect, // ,5 SFX
+		pkeyFXModeEffect,   // ,6 MFX
+		pkeyFXEndpoint,     // ,7 EFX
+	} {
 		if err := k.SetStringValue(key, apoClsid); err != nil {
-			return fmt.Errorf("failed to set FX key %s: %w", key, err)
+			return fmt.Errorf("failed to set %s: %w", key, err)
 		}
 	}
 
-	// Nombre visible en el mezclador de Windows
-	_ = k.SetStringValue(pkeyFXName, "ViPER4Windows APO")
+	k.SetStringValue(pkeyFXName, "ViPER4Windows APO")
 
 	log.Printf("✓ APO installed on device %s (%s)", deviceID, deviceType)
 

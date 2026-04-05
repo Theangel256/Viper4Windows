@@ -20,6 +20,27 @@ import (
 //go:embed Hydrogen_Inst.dll
 var driverBinary []byte
 
+// ── DSP Parameter Constants ──────────────────────────────────────────────────
+
+const (
+	MinPreVol        = -12.0
+	MaxPreVol        = 0
+	MinPostVol       = 0
+	MaxPostVol       = 12.0
+	MinEqBand        = -12.0
+	MaxEqBand        = 12.0
+	MinXBassLevel    = -12.0
+	MaxXBassLevel    = 12.0
+	MinXClarityLevel = -12.0
+	MaxXClarityLevel = 12.0
+	MinSpeakerSize   = 0
+	MaxSpeakerSize   = 10
+	MinSpaceSize     = 0
+	MaxSpaceSize     = 10
+	MinImageSize     = 0
+	MaxImageSize     = 10
+)
+
 // ── DSP Data types ────────────────────────────────────────────────────────────
 
 type MasterState struct {
@@ -256,6 +277,12 @@ func (a *App) SetDriverStatus(install bool) bool {
 			log.Printf("failed to restart audio engine: %v", err)
 			return false
 		}
+		log.Println("Inicializando memoria compartida post-instalación...")
+		if err := a.dsp.InitSharedMemory(); err != nil {
+			log.Printf("⚠️ Error init shared mem after install: %v", err)
+		} else {
+			a.synchronize()
+		}
 		return true
 
 	} else {
@@ -328,6 +355,7 @@ func (a *App) GetState() DSPState {
 // ResetState restores factory defaults.
 func (a *App) ResetState() DSPState {
 	a.state = defaultState()
+	a.synchronize()
 	return a.state
 }
 
@@ -345,47 +373,54 @@ func (a *App) SetPower(on bool) {
 
 // SetPreVolume sets the pre-DSP volume in dB (range −40..+12).
 func (a *App) SetPreVolume(db float64) {
-	a.state.Master.PreVol = clamp(db, -40, 12)
+	a.state.Master.PreVol = clamp(db, MinPreVol, MaxPreVol)
+	a.synchronize()
 }
 
 // SetPostVolume sets the post-DSP volume in dB (range −40..+12).
 func (a *App) SetPostVolume(db float64) {
-	a.state.Master.PostVol = clamp(db, -40, 12)
+	a.state.Master.PostVol = clamp(db, MinPostVol, MaxPostVol)
+	a.synchronize()
 }
 
 // SetXBass replaces the full XBass state.
 func (a *App) SetXBass(s XBassState) {
-	s.Level = clamp(s.Level, -12, 12)
-	s.SpeakerSize = clampInt(s.SpeakerSize, 0, 10)
+	s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
+	s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
 	a.state.XBass = s
+	a.synchronize()
 }
 
 // SetXClarity replaces the full XClarity state.
 func (a *App) SetXClarity(s XClarityState) {
-	s.Level = clamp(s.Level, -12, 12)
+	s.Level = clamp(s.Level, MinXClarityLevel, MaxXClarityLevel)
 	a.state.XClarity = s
+	a.synchronize()
 }
 
 // SetSurround3D replaces the full 3D Surround state.
 func (a *App) SetSurround3D(s Surround3DState) {
-	s.SpaceSize = clampInt(s.SpaceSize, 0, 10)
-	s.ImageSize = clampInt(s.ImageSize, 0, 10)
+	s.SpaceSize = clampInt(s.SpaceSize, MinSpaceSize, MaxSpaceSize)
+	s.ImageSize = clampInt(s.ImageSize, MinImageSize, MaxImageSize)
 	a.state.Surround3D = s
+	a.synchronize()
 }
 
 // SetReverb replaces the full reverb parameter set.
 func (a *App) SetReverb(p ReverbParams) {
 	a.state.Reverb = p
+	a.synchronize()
 }
 
 // SetReverbPanel updates the bottom reverb strip state.
 func (a *App) SetReverbPanel(p ReverbPanelState) {
 	a.state.ReverbPanel = p
+	a.synchronize()
 }
 
 func (a *App) SetEqBand(index int, db float64) {
 	if index >= 0 && index < len(a.state.Equalizer) {
-		a.state.Equalizer[index] = clamp(db, -12, 12)
+		a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
 
 		params := VIPER_DSP_PARAMS{
 			Enabled:   1.0,
@@ -411,6 +446,17 @@ func (a *App) SetEqBand(index int, db float64) {
 func (a *App) ResetEq() {
 	for i := range a.state.Equalizer {
 		a.state.Equalizer[i] = 0
+	}
+	a.synchronize()
+}
+
+// SetFullEq sets all equalizer bands at once.
+func (a *App) SetFullEq(bands []float64) {
+	if len(bands) == len(a.state.Equalizer) {
+		for i, db := range bands {
+			a.state.Equalizer[i] = clamp(db, MinEqBand, MaxEqBand)
+		}
+		a.synchronize()
 	}
 }
 
