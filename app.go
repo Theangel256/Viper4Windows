@@ -2,23 +2,16 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"unsafe"
 
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-//go:embed Hydrogen_Inst.dll
-var driverBinary []byte
+var driverBinary []byte // optionally loaded at runtime from the app dir or System32
 
 // ── DSP Parameter Constants ──────────────────────────────────────────────────
 
@@ -184,61 +177,6 @@ func (a *App) synchronize() {
 	a.dsp.ApplyChanges(a.state)
 }
 
-// ── Manejo de Instancia Única ────────────────────────────────────────────────
-
-func (a *App) OnSecondInstanceLaunch(data options.SecondInstanceData) {
-	// Traer la ventana al frente
-	wailsRuntime.WindowUnminimise(a.ctx)
-	wailsRuntime.WindowShow(a.ctx)
-
-	// Opcional: Avisar al frontend que alguien intentó abrir otra instancia
-	wailsRuntime.EventsEmit(a.ctx, "second_instance_attempt", data.Args)
-}
-
-// IsElevated checks if the process has administrative privileges
-func (dm *DriverManager) IsElevated() bool {
-	// Method 1: Token elevation (primary)
-	var token windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err == nil {
-		defer token.Close()
-
-		var elevation TOKEN_ELEVATION
-		var returnedLen uint32
-		err = windows.GetTokenInformation(
-			token,
-			windows.TokenElevation,
-			(*byte)(unsafe.Pointer(&elevation)),
-			uint32(unsafe.Sizeof(elevation)),
-			&returnedLen,
-		)
-		if err == nil {
-			return elevation.TokenIsElevated != 0
-		}
-	}
-
-	// Method 2: Fallback — try opening a protected registry key
-	// If we can write to HKLM, we're elevated
-	k, err := registry.OpenKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
-		registry.SET_VALUE,
-	)
-	if err == nil {
-		k.Close()
-		return true
-	}
-
-	return false
-}
-
-// RequireAdmin validates administrative privileges before operations
-func (dm *DriverManager) RequireAdmin() error {
-	if !dm.IsElevated() {
-		return fmt.Errorf("ACCESS_DENIED: Administrator privileges required.\nRight-click the application and select 'Run as Administrator'")
-	}
-	return nil
-}
-
 // ── APO Driver Management ─────────────────────────────────────────────────────
 
 // CheckDriver verifica si el registro existe Y si el archivo DLL físico está presente
@@ -258,19 +196,44 @@ func (a *App) SetDriverStatus(install bool) bool {
 		}
 		appDir := filepath.Dir(exePath)
 		driverPath := filepath.Join(appDir, "Hydrogen_Inst.dll")
-
-		log.Printf("Portable Mode: extracting driver to %s", driverPath)
-		if err := os.WriteFile(driverPath, driverBinary, 0644); err != nil {
-			log.Printf("failed to extract driver: %v", err)
-			return false
-		}
 		system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
-		if err := os.WriteFile(system32Path, driverBinary, 0644); err != nil {
-			log.Printf("⚠️ Could not copy to System32: %v", err)
+
+		var chosenPath string
+
+		// If we have an embedded binary, write it out and use it
+		if len(driverBinary) > 0 {
+			log.Printf("Portable Mode: extracting driver to %s", driverPath)
+			if err := os.WriteFile(driverPath, driverBinary, 0644); err != nil {
+				log.Printf("failed to extract driver: %v", err)
+				return false
+			}
+			// try to copy to System32 as well (best-effort)
+			if err := os.WriteFile(system32Path, driverBinary, 0644); err != nil {
+				log.Printf("⚠️ Could not copy to System32: %v", err)
+			}
+			chosenPath = driverPath
+		} else {
+			// No embedded DLL — prefer existing copies
+			if _, err := os.Stat(driverPath); err == nil {
+				chosenPath = driverPath
+			} else if _, err := os.Stat(system32Path); err == nil {
+				chosenPath = system32Path
+			} else {
+				log.Printf("❌ Hydrogen_Inst.dll not found. Place the DLL in %s or %s, or run the provided patcher.", driverPath, system32Path)
+				return false
+			}
 		}
-		if err := a.drv.RegisterAPO(driverPath); err != nil {
+
+		if err := a.drv.RegisterAPO(chosenPath); err != nil {
 			log.Printf("failed to register APO: %v", err)
 			return false
+		}
+
+		// Attempt to attach the APO to the default playback endpoint as a fallback
+		if err := a.drv.AttachToDefaultEndpoint(); err != nil {
+			log.Printf("⚠️ Could not attach APO to default endpoint: %v", err)
+		} else {
+			log.Println("✓ APO attached to default endpoint")
 		}
 
 		if err := a.drv.RestartAudioEngine(); err != nil {
@@ -462,6 +425,63 @@ func (a *App) SetFullEq(bands []float64) {
 
 func (a *App) writeToSharedMemory(params *VIPER_DSP_PARAMS) error {
 	return a.dsp.WriteParams(params)
+}
+
+// CommitDSPChanges forces an explicit flush of the current state to the APO.
+// This is used as a fallback when a soft DLL commit is not available.
+func (a *App) CommitDSPChanges() error {
+	// Fast path: try to apply to shared memory
+	if err := a.dsp.ApplyChanges(a.state); err == nil {
+		return nil
+	}
+
+	// Try to (re)initialize shared memory then apply again
+	if err := a.dsp.InitSharedMemory(); err == nil {
+		if err := a.dsp.ApplyChanges(a.state); err == nil {
+			return nil
+		}
+	}
+
+	// Fallback: if the APO is registered, restart the audio engine to force reload
+	if a.drv.CheckInstallation() {
+		if err := a.drv.RestartAudioEngine(); err != nil {
+			return fmt.Errorf("commit failed and audio restart failed: %w", err)
+		}
+
+		// After restart attempt to re-init shared memory and apply once more
+		if err := a.dsp.InitSharedMemory(); err == nil {
+			_ = a.dsp.ApplyChanges(a.state)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("commit failed: shared memory not available and APO not installed")
+}
+
+// InstallAPOOnDefaultDevice attempts to attach the registered APO to the default
+// playback endpoint and restarts the audio engine to apply changes. Returns an
+// error if the APO is not registered or the attach fails.
+func (a *App) InstallAPOOnDefaultDevice() error {
+	if !a.drv.CheckInstallation() {
+		return fmt.Errorf("APO not registered")
+	}
+
+	if err := a.drv.AttachToDefaultEndpoint(); err != nil {
+		log.Printf("⚠️ AttachToDefaultEndpoint failed: %v", err)
+		return err
+	}
+
+	if err := a.drv.RestartAudioEngine(); err != nil {
+		log.Printf("⚠️ RestartAudioEngine failed after attach: %v", err)
+		return err
+	}
+
+	// Try to initialize shared memory after successful attach
+	if err := a.dsp.InitSharedMemory(); err == nil {
+		a.synchronize()
+	}
+
+	return nil
 }
 
 // ── Presets Management ────────────────────────────────────────────────────────

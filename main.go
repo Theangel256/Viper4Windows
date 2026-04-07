@@ -2,17 +2,68 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"strings"
+	"unsafe"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+
+	windowsOpts "github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// DriverManager handles the registration and lifecycle of the APO.
+// Corresponds to the 'Installer' logic in ViPERDSP/Alpha.
+// IsElevated checks if the process has administrative privileges
+func (dm *DriverManager) IsElevated() bool {
+	// Method 1: Token elevation (primary)
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err == nil {
+		defer token.Close()
+
+		var elevation TOKEN_ELEVATION
+		var returnedLen uint32
+		err = windows.GetTokenInformation(
+			token,
+			windows.TokenElevation,
+			(*byte)(unsafe.Pointer(&elevation)),
+			uint32(unsafe.Sizeof(elevation)),
+			&returnedLen,
+		)
+		if err == nil {
+			return elevation.TokenIsElevated != 0
+		}
+	}
+
+	// Method 2: Fallback — try opening a protected registry key
+	// If we can write to HKLM, we're elevated
+	k, err := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
+		registry.SET_VALUE,
+	)
+	if err == nil {
+		k.Close()
+		return true
+	}
+
+	return false
+}
+
+// RequireAdmin validates administrative privileges before operations
+func (dm *DriverManager) RequireAdmin() error {
+	if !dm.IsElevated() {
+		return fmt.Errorf("ACCESS_DENIED: Administrator privileges required.\nRight-click the application and select 'Run as Administrator'")
+	}
+	return nil
+}
 
 func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
 	// Notificamos al frontend los argumentos si es necesario
@@ -54,7 +105,7 @@ func main() {
 		Bind: []interface{}{
 			app,
 		},
-		Windows: &windows.Options{
+		Windows: &windowsOpts.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			DisablePinchZoom:     true,

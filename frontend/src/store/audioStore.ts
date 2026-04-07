@@ -36,6 +36,7 @@ declare global {
           SetSurround3D(s: Surround3DState):      Promise<void>;
           SetReverb(p: ReverbParams):             Promise<void>;
           SetReverbPanel(p: ReverbPanelState):    Promise<void>;
+          CommitDSPChanges():                     Promise<void>;
           SavePreset(name: string):               Promise<void>;
           LoadPreset(name: string):               Promise<DSPState>;
           ListPresets():                          Promise<string[]>;
@@ -54,6 +55,17 @@ async function go<T>(fn: () => Promise<T>, onError?: () => void): Promise<T | nu
     if (onError) onError();
     return null;
   }
+}
+
+// Debounce helper for committing changes to the native driver.
+let commitTimer: number | undefined;
+function scheduleCommit() {
+  if (commitTimer) {
+    clearTimeout(commitTimer);
+  }
+  commitTimer = window.setTimeout(() => {
+    go(() => window.go.main.App.CommitDSPChanges()).catch(() => {});
+  }, 150);
 }
 
 // ── State types ───────────────────────────────────────────────────────────────
@@ -204,16 +216,19 @@ export const useAudioStore = create<AudioStore>()(
   setPower(on) {
     set((s) => ({ master: { ...s.master, power: on } }));
     go(() => window.go.main.App.SetPower(on));
+    scheduleCommit();
   },
 
   setPreVol(db) {
     set((s) => ({ master: { ...s.master, preVol: db } }));
     go(() => window.go.main.App.SetPreVolume(db));
+    scheduleCommit();
   },
 
   setPostVol(db) {
     set((s) => ({ master: { ...s.master, postVol: db } }));
     go(() => window.go.main.App.SetPostVolume(db));
+    scheduleCommit();
   },
 
   // ── Mode ──────────────────────────────────────────────────────────────────
@@ -221,6 +236,7 @@ export const useAudioStore = create<AudioStore>()(
   setMode(mode) {
     set({ mode });
     go(() => window.go.main.App.SetMode(mode));
+    scheduleCommit();
   },
 
     // ── Eq ──────────────────────────────────────────────────────────────────
@@ -235,6 +251,7 @@ export const useAudioStore = create<AudioStore>()(
         // Rollback on error
         set({ equalizer: prevEq });
       });
+      scheduleCommit();
       
       return { equalizer: nextEq };
     });
@@ -243,6 +260,7 @@ export const useAudioStore = create<AudioStore>()(
     const flatEq = Array(18).fill(0);
     set({ equalizer: flatEq });
     go(() => window.go.main.App.ResetEq());
+    scheduleCommit();
   },
 
   // ── XBass ─────────────────────────────────────────────────────────────────
@@ -251,6 +269,7 @@ export const useAudioStore = create<AudioStore>()(
     set((s) => {
       const next = { ...s.xBass, ...patch };
       go(() => window.go.main.App.SetXBass(next));
+      scheduleCommit();
       return { xBass: next };
     });
   },
@@ -261,6 +280,7 @@ export const useAudioStore = create<AudioStore>()(
     set((s) => {
       const next = { ...s.xClarity, ...patch };
       go(() => window.go.main.App.SetXClarity(next));
+      scheduleCommit();
       return { xClarity: next };
     });
   },
@@ -271,6 +291,7 @@ export const useAudioStore = create<AudioStore>()(
     set((s) => {
       const next = { ...s.surround3D, ...patch };
       go(() => window.go.main.App.SetSurround3D(next));
+      scheduleCommit();
       return { surround3D: next };
     });
   },
@@ -281,6 +302,7 @@ export const useAudioStore = create<AudioStore>()(
     set((s) => {
       const next = { ...s.reverb, ...patch };
       go(() => window.go.main.App.SetReverb(next));
+      scheduleCommit();
       return { reverb: next };
     });
   },
@@ -289,6 +311,7 @@ export const useAudioStore = create<AudioStore>()(
     set((s) => {
       const next = { ...s.reverbPanel, ...patch };
       go(() => window.go.main.App.SetReverbPanel(next));
+      scheduleCommit();
       return { reverbPanel: next };
     });
   },
