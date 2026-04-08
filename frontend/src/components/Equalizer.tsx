@@ -13,7 +13,6 @@ const BANDS = [
 ];
 
 export const Equalizer = memo(() => {
-  // Nota: Deberás añadir 'equalizer' y 'setEqBand' a tu interface AudioStore
   const { equalizer, setEqBand, resetEq, savePreset } = useAudioStore();
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [presetName, setPresetName] = useState("");

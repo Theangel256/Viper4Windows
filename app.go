@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
 
 var driverBinary []byte // optionally loaded at runtime from the app dir or System32
+var lastUpdate time.Time
 
 // ── DSP Parameter Constants ──────────────────────────────────────────────────
 
@@ -90,6 +92,7 @@ type DSPState struct {
 	Reverb      ReverbParams     `json:"reverb"`
 	ReverbPanel ReverbPanelState `json:"reverbPanel"`
 	Mode        string           `json:"mode"` // "music" | "movie" | "freestyle"
+	EqOn        bool             `json:"eqOn"`
 	Equalizer   []float64        `json:"equalizer"`
 }
 
@@ -97,6 +100,7 @@ type DSPState struct {
 func defaultState() DSPState {
 	return DSPState{
 		Equalizer: make([]float64, 18),
+		EqOn:      true,
 		Mode:      "freestyle",
 		Master: MasterState{
 			Power:   true,
@@ -164,7 +168,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	if err := a.dsp.InitSharedMemory(); err != nil {
+	if err := a.dsp.SyncSharedMemory(); err != nil {
 		log.Printf("⚠️ No se pudo conectar con el Driver (SharedMem): %v", err)
 	}
 	a.synchronize() // Carga inicial de parámetros
@@ -241,7 +245,7 @@ func (a *App) SetDriverStatus(install bool) bool {
 			return false
 		}
 		log.Println("Inicializando memoria compartida post-instalación...")
-		if err := a.dsp.InitSharedMemory(); err != nil {
+		if err := a.dsp.SyncSharedMemory(); err != nil {
 			log.Printf("⚠️ Error init shared mem after install: %v", err)
 		} else {
 			a.synchronize()
@@ -260,10 +264,6 @@ func (a *App) SetDriverStatus(install bool) bool {
 // registerAPO ha sido eliminada ya que su lógica se ha delegado al DriverManager.
 
 // RestartAudioServices ha sido eliminada ya que su lógica se ha delegado al DriverManager.
-
-func (a *App) UnregisterAPO() error {
-	return a.drv.UnregisterAPO()
-}
 
 func (a *App) PatchDefaultEndpoint() error {
 	// Esta ruta varía según el ID de tu tarjeta de sonido (GUID del Endpoint)
@@ -380,7 +380,33 @@ func (a *App) SetReverbPanel(p ReverbPanelState) {
 	a.state.ReverbPanel = p
 	a.synchronize()
 }
+func (a *App) SetEqBand(index int, db float64) {
+	if index >= 0 && index < len(a.state.Equalizer) {
+		// 1. Actualizamos el estado "bonito" (el que entiende tu frontend y Go)
+		a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
 
+		// 2. Control de flujo (Throttle)
+		// Solo llamamos a la pesada maquinaria de sincronización cada 16ms
+		if time.Since(lastUpdate) > 16*time.Millisecond {
+
+			// Aquí es donde sucede la magia: ApplyChanges ahora debe internamente
+			// llamar a fillBuffer para convertir tu state en el array de 256
+			if err := a.dsp.ApplyChanges(a.state); err != nil {
+				fmt.Printf("❌ ERROR APO: %v\n", err)
+			} else {
+				fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
+			}
+
+			lastUpdate = time.Now()
+		} else {
+			// Omitimos la actualización de memoria, pero el estado interno ya se guardó
+			// para la siguiente sincronización.
+			// fmt.Printf("⏳ Omitiendo señalización (Rate limit)\n")
+		}
+	}
+}
+
+/*
 func (a *App) SetEqBand(index int, db float64) {
 	if index >= 0 && index < len(a.state.Equalizer) {
 		a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
@@ -395,16 +421,16 @@ func (a *App) SetEqBand(index int, db float64) {
 		for i := 0; i < 18; i++ {
 			params.EqBands[i] = float32(a.state.Equalizer[i])
 		}
-
-		// Pasar directamente como *VIPER_DSP_PARAMS, sin conversión a []byte
-		if err := a.writeToSharedMemory(&params); err != nil {
-			fmt.Printf("❌ ERROR APO: %v\n", err)
-		} else {
+		if time.Since(lastUpdate) > 16*time.Millisecond {
+			a.dsp.ApplyChanges(a.state)
+			lastUpdate = time.Now()
 			fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
+		} else {
+			fmt.Printf("❌ ERROR APO: %v\n", "Demasiado rápido para aplicar cambios, omitiendo banda "+fmt.Sprint(index))
 		}
 	}
 }
-
+*/
 // ResetEq pone todas las bandas a 0
 func (a *App) ResetEq() {
 	for i := range a.state.Equalizer {
@@ -424,7 +450,7 @@ func (a *App) SetFullEq(bands []float64) {
 }
 
 func (a *App) writeToSharedMemory(params *VIPER_DSP_PARAMS) error {
-	return a.dsp.WriteParams(params)
+	return a.dsp.ApplyChanges(a.state)
 }
 
 // CommitDSPChanges forces an explicit flush of the current state to the APO.
@@ -436,7 +462,7 @@ func (a *App) CommitDSPChanges() error {
 	}
 
 	// Try to (re)initialize shared memory then apply again
-	if err := a.dsp.InitSharedMemory(); err == nil {
+	if err := a.dsp.SyncSharedMemory(); err == nil {
 		if err := a.dsp.ApplyChanges(a.state); err == nil {
 			return nil
 		}
@@ -449,7 +475,7 @@ func (a *App) CommitDSPChanges() error {
 		}
 
 		// After restart attempt to re-init shared memory and apply once more
-		if err := a.dsp.InitSharedMemory(); err == nil {
+		if err := a.dsp.SyncSharedMemory(); err == nil {
 			_ = a.dsp.ApplyChanges(a.state)
 		}
 		return nil
@@ -458,15 +484,27 @@ func (a *App) CommitDSPChanges() error {
 	return fmt.Errorf("commit failed: shared memory not available and APO not installed")
 }
 
+// CommitDSPChangesAsync calls CommitDSPChanges in a goroutine so the JS caller
+// won't block the UI while commit operations (which may include service restarts)
+// execute. This method is intentionally fire-and-forget from the caller's view.
+func (a *App) CommitDSPChangesAsync() {
+	go func() {
+		if err := a.CommitDSPChanges(); err != nil {
+			log.Printf("⚠️ CommitDSPChangesAsync error: %v", err)
+		}
+	}()
+}
+
 // InstallAPOOnDefaultDevice attempts to attach the registered APO to the default
 // playback endpoint and restarts the audio engine to apply changes. Returns an
 // error if the APO is not registered or the attach fails.
 func (a *App) InstallAPOOnDefaultDevice() error {
-	if !a.drv.CheckInstallation() {
+	dm := a.drv
+	if !dm.CheckInstallation() {
 		return fmt.Errorf("APO not registered")
 	}
 
-	if err := a.drv.AttachToDefaultEndpoint(); err != nil {
+	if err := dm.AttachToDefaultEndpoint(); err != nil {
 		log.Printf("⚠️ AttachToDefaultEndpoint failed: %v", err)
 		return err
 	}
@@ -477,7 +515,7 @@ func (a *App) InstallAPOOnDefaultDevice() error {
 	}
 
 	// Try to initialize shared memory after successful attach
-	if err := a.dsp.InitSharedMemory(); err == nil {
+	if err := a.dsp.SyncSharedMemory(); err == nil {
 		a.synchronize()
 	}
 

@@ -37,6 +37,7 @@ declare global {
           SetReverb(p: ReverbParams):             Promise<void>;
           SetReverbPanel(p: ReverbPanelState):    Promise<void>;
           CommitDSPChanges():                     Promise<void>;
+          CommitDSPChangesAsync():                Promise<void>;
           SavePreset(name: string):               Promise<void>;
           LoadPreset(name: string):               Promise<DSPState>;
           ListPresets():                          Promise<string[]>;
@@ -64,7 +65,7 @@ function scheduleCommit() {
     clearTimeout(commitTimer);
   }
   commitTimer = window.setTimeout(() => {
-    go(() => window.go.main.App.CommitDSPChanges()).catch(() => {});
+    go(() => window.go.main.App.CommitDSPChangesAsync()).catch(() => {});
   }, 150);
 }
 
@@ -117,6 +118,7 @@ export interface ReverbPanelState {
 
 export interface DSPState {
   master:      MasterState;
+  equalizer: number[];
   xBass:       XBassState;
   xClarity:    XClarityState;
   surround3D:  Surround3DState;
@@ -129,6 +131,7 @@ export interface DSPState {
 
 const DEFAULT_STATE: DSPState = {
   mode: "freestyle",
+  equalizer: Array(18).fill(0),
   master:     { power: false, preVol: 0, postVol: 12.00 },
   xBass:      { on: true, speakerSize: 5, level: 0, mode: "Natural Bass" },
   xClarity:   { on: true, level: 0, mode: "X-HiFi" },
@@ -147,8 +150,8 @@ interface AudioStore extends DSPState {
   ready: boolean;
   presets: string[];
   isDriverInstalled: boolean;
-  equalizer: number[];
   setEqBand: (index: number, db: number) => void;
+  setFullEq?: (bands: number[]) => void;
   resetEq: () => void;
   checkDriverStatus: () => Promise<void>;
 
@@ -240,81 +243,104 @@ export const useAudioStore = create<AudioStore>()(
   },
 
     // ── Eq ──────────────────────────────────────────────────────────────────
-  setEqBand(index, db) {
-    set((s) => {
-      const prevEq = [...s.equalizer];
-      const nextEq = [...s.equalizer];
+    setEqBand(index, db) {
+      const prevEq = get().equalizer;
+      const nextEq = [...prevEq];
       nextEq[index] = db;
       
-      // Enviamos el cambio a Go de forma optimista
+      // 1. Actualización optimista (Pura)
+      set({ equalizer: nextEq });
+      
+      // 2. Efecto secundario fuera del set
       go(() => window.go.main.App.SetEqBand(index, db), () => {
-        // Rollback on error
+        // Rollback si falla
         set({ equalizer: prevEq });
       });
       scheduleCommit();
-      
-      return { equalizer: nextEq };
-    });
-  },
+    },
   resetEq() {
     const flatEq = Array(18).fill(0);
     set({ equalizer: flatEq });
     go(() => window.go.main.App.ResetEq());
     scheduleCommit();
   },
+  setFullEq(bands) {
+      const prevEq = get().equalizer;
+      
+      set({ equalizer: bands });
+      
+      go(() => window.go.main.App.SetFullEq(bands), () => {
+        set({ equalizer: prevEq }); // Rollback añadido
+      });
+      scheduleCommit();
+    },
 
   // ── XBass ─────────────────────────────────────────────────────────────────
 
   setXBass(patch) {
-    set((s) => {
-      const next = { ...s.xBass, ...patch };
-      go(() => window.go.main.App.SetXBass(next));
+      const prev = get().xBass;
+      const next = { ...prev, ...patch };
+      
+      set({ xBass: next });
+      
+      go(() => window.go.main.App.SetXBass(next), () => {
+        set({ xBass: prev }); // Rollback preventivo
+      });
       scheduleCommit();
-      return { xBass: next };
-    });
-  },
+    },
 
   // ── XClarity ──────────────────────────────────────────────────────────────
 
   setXClarity(patch) {
-    set((s) => {
-      const next = { ...s.xClarity, ...patch };
-      go(() => window.go.main.App.SetXClarity(next));
+      const prev = get().xClarity;
+      const next = { ...prev, ...patch };
+      
+      set({ xClarity: next });
+      
+      go(() => window.go.main.App.SetXClarity(next), () => {
+        set({ xClarity: prev }); // Rollback preventivo
+      });
       scheduleCommit();
-      return { xClarity: next };
-    });
-  },
+    },
 
   // ── Surround 3D ───────────────────────────────────────────────────────────
 
   setSurround3D(patch) {
-    set((s) => {
-      const next = { ...s.surround3D, ...patch };
-      go(() => window.go.main.App.SetSurround3D(next));
+      const prev = get().surround3D;
+      const next = { ...prev, ...patch };
+      
+      set({ surround3D: next });
+      
+      go(() => window.go.main.App.SetSurround3D(next), () => {
+        set({ surround3D: prev }); // Rollback preventivo
+      });
       scheduleCommit();
-      return { surround3D: next };
-    });
-  },
+    },
 
   // ── Reverb ────────────────────────────────────────────────────────────────
 
   setReverb(patch) {
-    set((s) => {
-      const next = { ...s.reverb, ...patch };
-      go(() => window.go.main.App.SetReverb(next));
+      const prev = get().reverb;
+      const next = { ...prev, ...patch };
+      
+      set({ reverb: next });
+      
+      go(() => window.go.main.App.SetReverb(next), () => {
+        set({ reverb: prev }); // Rollback preventivo
+      });
       scheduleCommit();
-      return { reverb: next };
-    });
-  },
-
+    },
   setReverbPanel(patch) {
-    set((s) => {
-      const next = { ...s.reverbPanel, ...patch };
-      go(() => window.go.main.App.SetReverbPanel(next));
+      const prev = get().reverbPanel;
+      const next = { ...prev, ...patch };
+      
+      set({ reverbPanel: next });
+      
+      go(() => window.go.main.App.SetReverbPanel(next), () => {
+        set({ reverbPanel: prev }); // Rollback preventivo
+      });
       scheduleCommit();
-      return { reverbPanel: next };
-    });
-  },
+    },
 
   // ── Presets ───────────────────────────────────────────────────────────────
 

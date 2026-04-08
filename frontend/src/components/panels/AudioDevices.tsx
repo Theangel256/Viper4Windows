@@ -339,7 +339,7 @@ export default function AudioDevices({ onClose }: AudioDevicesProps) {
 
 const styles = `
   .ad-panel {
-    background: #141414;
+    background: #18181b;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
     display: flex;

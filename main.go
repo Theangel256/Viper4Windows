@@ -19,8 +19,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// DriverManager handles the registration and lifecycle of the APO.
-// Corresponds to the 'Installer' logic in ViPERDSP/Alpha.
+type TOKEN_ELEVATION struct {
+	TokenIsElevated uint32
+}
+
 // IsElevated checks if the process has administrative privileges
 func (dm *DriverManager) IsElevated() bool {
 	// Method 1: Token elevation (primary)
@@ -63,6 +65,13 @@ func (dm *DriverManager) RequireAdmin() error {
 		return fmt.Errorf("ACCESS_DENIED: Administrator privileges required.\nRight-click the application and select 'Run as Administrator'")
 	}
 	return nil
+}
+
+// GetAudioDevices (método de App - mantenido para Wails)
+func (a *App) GetAudioDevices() ([]AudioDevice, error) {
+	render, _ := enumerateDevices("render")
+	capture, _ := enumerateDevices("capture")
+	return append(render, capture...), nil
 }
 
 func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
