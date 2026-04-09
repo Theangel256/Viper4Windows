@@ -41,30 +41,30 @@ export const DSPSlider = memo(({
   const displayVal = value.toFixed(decimals);
 
   return (
-    <div className={`w-full flex flex-col gap-1.5 ${className}`}>
+    <div className={`w-full flex flex-col gap-1 ${className}`}>
       {showValue && !compact && (
         <div className="flex items-center justify-between w-full px-0.5">
-          <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest">
+          <span className="text-[9px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.22em]">
             {label}
           </span>
-          <span className="text-[11px] font-bold tabular-nums text-zinc-700 dark:text-zinc-200">
-            {displayVal}<span className="text-[9px] ml-0.5 opacity-60">{unit}</span>
+          <span className="text-[10px] font-bold tabular-nums text-zinc-700 dark:text-zinc-200">
+            {displayVal}<span className="text-[8px] ml-0.5 opacity-60">{unit}</span>
           </span>
         </div>
       )}
 
-      <div className="relative w-full h-6 flex items-center group">
+      <div className={`relative w-full ${compact ? "h-5" : "h-5.5"} flex items-center group`}>
         {/* 1. CAPA VISUAL (Fondo y Progreso) - pointer-events-none para que no bloqueen el clic */}
-        <div className="absolute w-full h-1.5 bg-zinc-100 dark:bg-zinc-800/60 rounded-full pointer-events-none" />
+        <div className="absolute w-full h-1 bg-zinc-100 dark:bg-zinc-800/60 rounded-full pointer-events-none" />
         
         <div 
-          className="absolute h-1.5 bg-zinc-900 dark:bg-zinc-100 rounded-full pointer-events-none" 
+          className="absolute h-1 bg-zinc-900 dark:bg-zinc-100 rounded-full pointer-events-none" 
           style={{ width: `${pct}%` }}
         />
 
         {/* 2. EL PUNTO ROJO VISUAL - Sincronizado con el porcentaje */}
         <div 
-          className="absolute w-4 h-4 bg-white border-[3px] border-red-500 rounded-full shadow-md pointer-events-none z-0"
+          className={`absolute ${compact ? "w-3.5 h-3.5 border-2.5" : "w-4 h-4 border-[3px]"} bg-white border-red-500 rounded-full shadow-md pointer-events-none z-0`}
           style={{ 
             left: `${pct}%`,
             transform: "translateX(-50%)" 
@@ -81,13 +81,13 @@ export const DSPSlider = memo(({
           onChange={handleChange}
           className="absolute w-full h-full appearance-none bg-transparent cursor-pointer z-20
             [&::-webkit-slider-thumb]:appearance-none 
-            [&::-webkit-slider-thumb]:w-6 
-            [&::-webkit-slider-thumb]:h-6 
+            [&::-webkit-slider-thumb]:w-5 
+            [&::-webkit-slider-thumb]:h-5 
             [&::-webkit-slider-thumb]:rounded-full 
             [&::-webkit-slider-thumb]:bg-transparent
-            
-            [&::-moz-range-thumb]:w-6
-            [&::-moz-range-thumb]:h-6
+             
+            [&::-moz-range-thumb]:w-5
+            [&::-moz-range-thumb]:h-5
             [&::-moz-range-thumb]:bg-transparent
             [&::-moz-range-thumb]:border-none
           "

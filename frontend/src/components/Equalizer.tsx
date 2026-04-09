@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useAudioStore } from "../store/audioStore";
 import { DSPSlider } from "./ui/DSPSlider";
 import { DSPButton } from "./ui/DSPButton";
-import { Activity, RotateCcw, Save } from "lucide-react";
+import { Activity, RotateCcw, Save, X } from "lucide-react";
 
 // Definimos las frecuencias estándar para un ecualizador de 18 bandas
 const BANDS = [
@@ -12,7 +12,12 @@ const BANDS = [
   "11.8k", "16.7k", "20k"
 ];
 
-export const Equalizer = memo(() => {
+interface EqualizerProps {
+  onClose?: () => void;
+  overlay?: boolean;
+}
+
+export const Equalizer = memo(({ onClose, overlay = false }: EqualizerProps) => {
   const { equalizer, setEqBand, resetEq, savePreset } = useAudioStore();
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [presetName, setPresetName] = useState("");
@@ -27,15 +32,21 @@ export const Equalizer = memo(() => {
 
   return (
     <>
-      <section className="bg-white dark:bg-zinc-900 rounded-3xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 w-full relative">
+      <section
+        className={`relative w-full border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900 ${
+          overlay
+            ? "mx-auto max-w-[1320px] rounded-[30px] px-4 py-4 sm:px-5 lg:px-6 lg:py-5"
+            : "rounded-[28px] px-5 py-4"
+        }`}
+      >
         {/* Header del Ecualizador */}
-        <div className="flex items-center justify-between mb-8">
+        <div className={`flex items-center justify-between ${overlay ? "mb-4 sm:mb-5" : "mb-5"}`}>
           <div className="flex items-center gap-3">
             <div className="p-2 bg-purple-500/10 rounded-xl">
-              <Activity className="text-purple-500" size={20} />
+              <Activity className="text-purple-500" size={18} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-zinc-800 dark:text-zinc-100 leading-none">
+              <h2 className="text-base font-bold text-zinc-800 dark:text-zinc-100 leading-none">
                 Equalizer
               </h2>
               <p className="text-[10px] text-zinc-400 uppercase tracking-widest mt-1 font-bold">
@@ -45,16 +56,25 @@ export const Equalizer = memo(() => {
           </div>
 
           <div className="flex items-center gap-2">
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+                title="Close equalizer"
+              >
+                <X size={16} />
+              </button>
+            )}
             <button 
               onClick={() => resetEq?.()}
-              className="p-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+              className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
               title="Reset to 0dB"
             >
-              <RotateCcw size={18} />
+              <RotateCcw size={16} />
             </button>
             <button 
               onClick={() => setShowSaveModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-2xl text-xs font-bold hover:opacity-90 transition-opacity"
+              className="flex items-center gap-2 px-3.5 py-1.5 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-2xl text-[11px] font-bold hover:opacity-90 transition-opacity"
             >
               <Save size={14} /> SAVE PRESET
             </button>
@@ -62,20 +82,30 @@ export const Equalizer = memo(() => {
       </div>
 
       {/* Grid de Sliders Verticales */}
-      <div className="flex flex-row justify-between items-end h-[320px] gap-2 px-2 overflow-x-auto pb-4 custom-scrollbar">
+      <div
+        className={`flex flex-row items-end gap-1.5 overflow-x-auto custom-scrollbar ${
+          overlay
+            ? "h-[min(58vh,440px)] justify-start sm:justify-between px-1 pb-2 sm:pb-3"
+            : "h-[268px] justify-between px-1 pb-3"
+        }`}
+      >
         {BANDS.map((freq, index) => (
-          <div key={freq} className="flex flex-col items-center gap-4 h-full min-w-[32px] group">
+          <div key={freq} className="flex flex-col items-center gap-2.5 h-full min-w-[28px] group">
             {/* Valor en dB (solo visible al interactuar o sutil) */}
             <span className="text-[9px] font-bold tabular-nums text-zinc-400 group-hover:text-purple-500 transition-colors">
               {equalizer?.[index]?.toFixed(1) || "0.0"}
             </span>
 
             {/* Contenedor del Slider Vertical */}
-            <div className="relative flex-1 w-6 flex items-center justify-center">
+            <div className="relative flex-1 w-5 flex items-center justify-center">
               {/* Aquí rotamos el DSPSlider 270 grados para hacerlo vertical.
                   Ajustamos el ancho al alto del contenedor.
               */}
-              <div className="absolute w-[240px] -rotate-90 origin-center pointer-events-auto">
+              <div
+                className={`absolute -rotate-90 origin-center pointer-events-auto ${
+                  overlay ? "w-[min(34vw,320px)] sm:w-[230px] lg:w-[250px]" : "w-[204px]"
+                }`}
+              >
                 <DSPSlider
                   min={-12}
                   max={12}
@@ -90,8 +120,8 @@ export const Equalizer = memo(() => {
 
             {/* Etiqueta de Frecuencia */}
             <div className="flex flex-col items-center">
-              <div className="w-1 h-1 bg-zinc-200 dark:bg-zinc-700 rounded-full mb-2" />
-              <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 orientation-vertical">
+              <div className="w-1 h-1 bg-zinc-200 dark:bg-zinc-700 rounded-full mb-1.5" />
+              <span className="text-[9px] font-bold text-zinc-500 dark:text-zinc-400 orientation-vertical">
                 {freq}
               </span>
             </div>
@@ -100,7 +130,11 @@ export const Equalizer = memo(() => {
       </div>
 
       {/* Línea de referencia de 0dB */}
-      <div className="absolute left-0 right-0 top-[calc(50%+12px)] h-[1px] bg-zinc-100 dark:bg-zinc-800/50 pointer-events-none z-0" />
+      <div
+        className={`absolute left-0 right-0 h-[1px] bg-zinc-100 dark:bg-zinc-800/50 pointer-events-none z-0 ${
+          overlay ? "top-[calc(50%+10px)]" : "top-[calc(50%+4px)]"
+        }`}
+      />
     </section>
 
     {/* Save Preset Modal */}

@@ -9,14 +9,14 @@ import { PowerButton } from "../ui/PowerButton";
 export function MasterControls() {
   const { master, setPower, setPreVol, setPostVol } = useAudioStore();
   return (
-<div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 w-full">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-zinc-800 dark:text-zinc-100 tracking-tight">
+<div className="bg-white dark:bg-zinc-900 rounded-[28px] px-5 py-4 shadow-sm border border-zinc-200 dark:border-zinc-800 w-full">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-zinc-800 dark:text-zinc-100 tracking-tight">
           Master Controls
         </h2>
         <PowerButton />
       </div>
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <DSPSlider
           label="Pre-Volume"
           min={-18} max={0} step={0.05}

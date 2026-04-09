@@ -65,9 +65,10 @@ function DeviceIcon({ type }: { type: string }) {
 
 interface AudioDevicesProps {
   onClose?: () => void;
+  overlay?: boolean;
 }
 
-export default function AudioDevices({ onClose }: AudioDevicesProps) {
+export default function AudioDevices({ onClose, overlay = false }: AudioDevicesProps) {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [tab, setTab] = useState<"render" | "capture">("render");
   const [loading, setLoading] = useState(true);
@@ -147,6 +148,7 @@ export default function AudioDevices({ onClose }: AudioDevicesProps) {
       <style>{styles}</style>
 
       <div className="ad-panel">
+        <div className={overlay ? "ad-panel-overlay" : ""}>
         {/* Header */}
         <div className="ad-header">
           <div className="ad-header-left">
@@ -330,6 +332,7 @@ export default function AudioDevices({ onClose }: AudioDevicesProps) {
 
         {/* Toast notification */}
         {toast && <div className="ad-toast">{toast}</div>}
+        </div>
       </div>
     </>
   );
@@ -341,14 +344,22 @@ const styles = `
   .ad-panel {
     background: #18181b;
     border: 1px solid #2a2a2a;
-    border-radius: 12px;
+    border-radius: 24px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     position: relative;
     font-family: 'DM Sans', 'Segoe UI', sans-serif;
     min-width: 340px;
-    max-width: 420px;
+    max-width: 100%;
+    width: 100%;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+  }
+
+  .ad-panel-overlay {
+    display: flex;
+    flex-direction: column;
+    min-height: min(76vh, 760px);
   }
 
   /* ── Header ── */
@@ -356,14 +367,14 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 18px 12px;
+    padding: 18px 18px 12px;
     border-bottom: 1px solid #222;
   }
 
   .ad-header-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
 
   .ad-icon {
@@ -379,32 +390,33 @@ const styles = `
   }
 
   .ad-icon svg {
-    width: 18px;
-    height: 18px;
+    width: 17px;
+    height: 17px;
   }
 
   .ad-title {
     margin: 0;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     color: #f0f0f0;
     letter-spacing: 0.02em;
   }
 
   .ad-subtitle {
-    margin: 1px 0 0;
+    margin: 4px 0 0;
     font-size: 10px;
-    color: #555;
-    letter-spacing: 0.05em;
+    color: #6b7280;
+    letter-spacing: 0.24em;
     text-transform: uppercase;
+    font-weight: 700;
   }
 
   .ad-close {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     background: none;
     border: 1px solid #2a2a2a;
-    border-radius: 6px;
+    border-radius: 10px;
     cursor: pointer;
     color: #555;
     display: flex;
@@ -422,22 +434,23 @@ const styles = `
     display: flex;
     align-items: center;
     gap: 2px;
-    padding: 10px 14px 0;
+    padding: 10px 16px 0;
     border-bottom: 1px solid #1e1e1e;
+    flex-wrap: wrap;
   }
 
   .ad-tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 7px 12px;
+    gap: 5px;
+    padding: 7px 10px;
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
     cursor: pointer;
     color: #555;
-    font-size: 11.5px;
-    font-weight: 500;
+    font-size: 11px;
+    font-weight: 600;
     font-family: inherit;
     transition: all 0.15s;
     margin-bottom: -1px;
@@ -450,13 +463,14 @@ const styles = `
   .ad-tab-stats {
     margin-left: auto;
     display: flex;
-    gap: 6px;
-    padding-bottom: 8px;
+    gap: 5px;
+    padding-bottom: 6px;
+    flex-wrap: wrap;
   }
 
   .stat-chip {
-    font-size: 10px;
-    padding: 2px 7px;
+    font-size: 9px;
+    padding: 2px 6px;
     border-radius: 20px;
     background: #1e1e1e;
     color: #555;
@@ -473,8 +487,8 @@ const styles = `
   .ad-toolbar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
+    gap: 6px;
+    padding: 10px 16px;
     border-bottom: 1px solid #1e1e1e;
   }
 
@@ -483,14 +497,14 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
-    padding: 7px 12px;
+    gap: 6px;
+    padding: 8px 12px;
     background: rgba(229, 57, 53, 0.1);
     border: 1px solid rgba(229, 57, 53, 0.25);
     border-radius: 7px;
     color: #e53935;
-    font-size: 11.5px;
-    font-weight: 500;
+    font-size: 11px;
+    font-weight: 600;
     font-family: inherit;
     cursor: pointer;
     transition: all 0.15s;
@@ -505,11 +519,11 @@ const styles = `
   .ad-btn-all svg { width: 13px; height: 13px; }
 
   .ad-btn-refresh {
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     background: #1a1a1a;
     border: 1px solid #2a2a2a;
-    border-radius: 7px;
+    border-radius: 10px;
     color: #555;
     cursor: pointer;
     display: flex;
@@ -522,20 +536,20 @@ const styles = `
 
   .ad-btn-refresh:hover { color: #aaa; border-color: #3a3a3a; }
   .ad-btn-refresh:disabled { opacity: 0.4; cursor: not-allowed; }
-  .ad-btn-refresh svg { width: 14px; height: 14px; }
+  .ad-btn-refresh svg { width: 13px; height: 13px; }
 
   /* ── Error ── */
   .ad-error {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 8px 14px 0;
-    padding: 8px 12px;
+    margin: 8px 16px 0;
+    padding: 9px 11px;
     background: rgba(229, 57, 53, 0.08);
     border: 1px solid rgba(229, 57, 53, 0.2);
     border-radius: 7px;
     color: #e57373;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.4;
   }
 
@@ -545,11 +559,17 @@ const styles = `
   .ad-list {
     flex: 1;
     overflow-y: auto;
-    padding: 8px 10px 10px;
+    padding: 10px 12px 12px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    max-height: 320px;
+    gap: 8px;
+    max-height: 286px;
+  }
+
+  .ad-panel-overlay .ad-list {
+    max-height: none;
+    min-height: min(50vh, 520px);
+    padding: 12px 16px 16px;
   }
 
   .ad-list::-webkit-scrollbar { width: 4px; }
@@ -561,23 +581,23 @@ const styles = `
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    padding: 32px;
+    gap: 8px;
+    padding: 24px;
     color: #444;
   }
 
-  .ad-empty svg { width: 28px; height: 28px; }
-  .ad-empty p { margin: 0; font-size: 12px; }
+  .ad-empty svg { width: 24px; height: 24px; }
+  .ad-empty p { margin: 0; font-size: 11px; }
 
   /* ── Individual device row ── */
   .ad-device {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 9px 11px;
+    gap: 8px;
+    padding: 10px 11px;
     background: #181818;
     border: 1px solid #232323;
-    border-radius: 8px;
+    border-radius: 12px;
     position: relative;
     overflow: hidden;
     transition: border-color 0.15s;
@@ -596,11 +616,11 @@ const styles = `
   }
 
   .device-icon-wrap {
-    width: 30px;
-    height: 30px;
+    width: 34px;
+    height: 34px;
     background: #1e1e1e;
     border: 1px solid #2a2a2a;
-    border-radius: 6px;
+    border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -616,12 +636,12 @@ const styles = `
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .device-name {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
     color: #d0d0d0;
     white-space: nowrap;
     overflow: hidden;
@@ -631,7 +651,7 @@ const styles = `
   .device-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
   }
 
@@ -641,7 +661,7 @@ const styles = `
     align-items: center;
     gap: 4px;
     font-size: 10px;
-    padding: 1px 6px;
+    padding: 2px 6px;
     border-radius: 10px;
   }
 
@@ -662,7 +682,7 @@ const styles = `
     align-items: center;
     gap: 4px;
     font-size: 10px;
-    padding: 1px 6px;
+    padding: 2px 6px;
     border-radius: 10px;
     background: rgba(229, 57, 53, 0.1);
     color: #e57373;
@@ -673,11 +693,11 @@ const styles = `
   .device-toggle {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 5px 10px;
-    border-radius: 6px;
-    font-size: 11px;
-    font-weight: 500;
+    gap: 4px;
+    padding: 6px 10px;
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 600;
     font-family: inherit;
     cursor: pointer;
     transition: all 0.15s;
@@ -777,5 +797,68 @@ const styles = `
   }
   @keyframes toast-out {
     to { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  }
+
+  @media (max-width: 900px) {
+    .ad-panel-overlay {
+      min-height: min(82vh, 760px);
+    }
+
+    .ad-header {
+      padding: 16px 14px 12px;
+    }
+
+    .ad-tabs {
+      padding: 10px 14px 0;
+      gap: 6px;
+    }
+
+    .ad-tab-stats {
+      width: 100%;
+      margin-left: 0;
+      justify-content: flex-start;
+    }
+
+    .ad-toolbar {
+      padding: 10px 14px;
+    }
+
+    .ad-list,
+    .ad-panel-overlay .ad-list {
+      padding: 10px 12px 14px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .ad-panel {
+      border-radius: 20px;
+    }
+
+    .ad-tabs {
+      align-items: flex-start;
+    }
+
+    .ad-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .ad-btn-refresh {
+      width: 100%;
+    }
+
+    .ad-device {
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .device-info {
+      min-width: calc(100% - 46px);
+    }
+
+    .device-toggle {
+      width: 100%;
+      justify-content: center;
+    }
   }
 `;
