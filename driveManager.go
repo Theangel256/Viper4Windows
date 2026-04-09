@@ -1,9 +1,7 @@
-// audio_devices.go
 package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +45,14 @@ const (
 
 type DriverManager struct{}
 
+func fileExistsAndNotEmpty(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() && info.Size() > 0
+}
+
 // InstallAPOOnDevice (ahora usa DriverManager internamente)
 func (a *App) InstallAPOOnDevice(deviceID, deviceType string) error {
 	dm := &DriverManager{}
@@ -58,7 +64,7 @@ func (a *App) InstallAPOOnDevice(deviceID, deviceType string) error {
 		return err
 	}
 
-	log.Printf("✓ APO instalado en %s (%s)", deviceID, deviceType)
+	logV("apo attached: %s (%s)", deviceID, deviceType)
 	return dm.RestartAudioEngine()
 }
 
@@ -73,7 +79,7 @@ func (a *App) UninstallAPOFromDevice(deviceID, deviceType string) error {
 		return err
 	}
 
-	log.Printf("✓ APO removido de %s (%s)", deviceID, deviceType)
+	logV("apo removed: %s (%s)", deviceID, deviceType)
 
 	return dm.RestartAudioEngine()
 }
@@ -90,7 +96,7 @@ func (a *App) InstallAPOOnAllRender() error {
 	for _, d := range devices {
 		if d.State == DeviceStateActive {
 			if err := dm.AttachToEndpoint(d.ID, "render"); err != nil {
-				log.Printf("⚠️ Error en %s: %v", d.Name, err)
+				logV("attach failed: %s: %v", d.Name, err)
 				lastErr = err
 			}
 		}
@@ -145,7 +151,7 @@ func (dm *DriverManager) AttachToDefaultEndpoint() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Dispositivo por defecto: %s", guid)
+	logV("default endpoint: %s", guid)
 	return dm.AttachToEndpoint(guid, "render")
 }
 func (dm *DriverManager) DetachFromEndpoint(endpointID, deviceType string) error {
@@ -175,6 +181,10 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 		return err
 	}
 
+	if !fileExistsAndNotEmpty(dllPath) {
+		return fmt.Errorf("DLL del APO invalida o vacia: %s", dllPath)
+	}
+
 	// Copiar DLL a System32
 	system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", filepath.Base(dllPath))
 	dllBytes, err := os.ReadFile(dllPath)
@@ -184,7 +194,7 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 	if err := os.WriteFile(system32Path, dllBytes, 0644); err != nil {
 		return fmt.Errorf("no se pudo copiar DLL a System32: %w", err)
 	}
-	log.Printf("✓ DLL copiado a System32: %s", system32Path)
+	logV("copied dll: %s", system32Path)
 
 	// Registro APO
 	apoPath := `SOFTWARE\Microsoft\Windows\CurrentVersion\AudioEngine\AudioProcessingObjects\` + ViPER_CLSID
@@ -204,20 +214,22 @@ func (dm *DriverManager) RegisterAPO(dllPath string) error {
 	// AudioInterface0
 	ik, _, err := registry.CreateKey(registry.LOCAL_MACHINE, apoPath+`\AudioInterface0`, registry.ALL_ACCESS)
 	if err != nil {
-		ik.SetStringValue("IID", ViPER_IID)
-		ik.Close()
+		return fmt.Errorf("no se pudo crear AudioInterface0: %w", err)
 	}
+	ik.SetStringValue("IID", ViPER_IID)
+	ik.Close()
 
 	// InprocServer32
 	comPath := `SOFTWARE\Classes\CLSID\` + ViPER_CLSID + `\InprocServer32`
 	ck, _, err := registry.CreateKey(registry.LOCAL_MACHINE, comPath, registry.ALL_ACCESS)
 	if err != nil {
-		ck.SetStringValue("", system32Path)
-		ck.SetStringValue("ThreadingModel", "Both")
-		ck.Close()
+		return fmt.Errorf("no se pudo crear InprocServer32: %w", err)
 	}
+	ck.SetStringValue("", system32Path)
+	ck.SetStringValue("ThreadingModel", "Both")
+	ck.Close()
 
-	log.Printf("✓ APO registrado correctamente (CLSID: %s)", ViPER_CLSID)
+	logV("apo registered")
 	return nil
 }
 
@@ -238,10 +250,10 @@ func (dm *DriverManager) UnregisterAPO() error {
 		registry.DeleteKey(registry.LOCAL_MACHINE, p)
 	}
 
-	dllPath := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
+	dllPath := filepath.Join(os.Getenv("SystemRoot"), "System32", "ViPERDSP.dll")
 	_ = os.Remove(dllPath)
 
-	log.Printf("✓ APO desregistrado completamente")
+	logV("apo unregistered")
 	return nil
 }
 
@@ -249,7 +261,7 @@ func (dm *DriverManager) UnregisterAPO() error {
 // Sugerencia: Solo llama a esto cuando sea estrictamente necesario (Instalación/Desinstalación)
 func (dm *DriverManager) RestartAudioEngine() error {
 
-	log.Println("Reconectando motor de audio...")
+	logV("restart audio engine")
 
 	exec.Command("net", "stop", "AudioEndpointBuilder", "/y").Run()
 
@@ -261,11 +273,11 @@ func (dm *DriverManager) RestartAudioEngine() error {
 		cmd := exec.Command("net", "start", svc)
 		if err := cmd.Run(); err != nil {
 			// Ignorar error si ya está corriendo
-			log.Printf("Aviso: %s pudo no haber arrancado: %v", svc, err)
+			logV("service start warning: %s: %v", svc, err)
 		}
 	}
 
-	log.Printf("✓ Motor de audio refrescado")
+	logV("audio engine restarted")
 	return nil
 }
 
@@ -279,7 +291,7 @@ func (dm *DriverManager) CheckInstallation() bool {
 	defer k.Close()
 
 	if dllPath, _, err := k.GetStringValue("Library"); err == nil {
-		if _, err := os.Stat(dllPath); err == nil {
+		if fileExistsAndNotEmpty(dllPath) {
 			return true
 		}
 	}
@@ -320,7 +332,7 @@ func enumerateDevices(deviceType string) ([]AudioDevice, error) {
 	for _, guid := range guids {
 		dev, err := readDeviceInfo(basePath, guid, deviceType)
 		if err != nil {
-			log.Printf("⚠️ Skipping device %s: %v", guid, err)
+			logV("skip device %s: %v", guid, err)
 			continue
 		}
 		devices = append(devices, dev)

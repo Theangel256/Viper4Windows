@@ -7,13 +7,29 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows/registry"
 )
 
-var driverBinary []byte // optionally loaded at runtime from the app dir or System32
 var lastUpdate time.Time
+
+type dllResolution struct {
+	path        string
+	emptyPaths  []string
+	searchPaths []string
+}
+
+type toastMessage struct {
+	Message string `json:"message"`
+	Tone    string `json:"tone"`
+}
+
+func logV(format string, args ...any) {
+	log.Printf("[ViPER] "+format, args...)
+}
 
 // ── DSP Parameter Constants ──────────────────────────────────────────────────
 
@@ -83,17 +99,129 @@ type ReverbPanelState struct {
 	WetMix   float64 `json:"wetMix"`
 }
 
+type XBassMonoState struct {
+	On          bool    `json:"on"`
+	SpeakerSize int     `json:"speakerSize"`
+	Level       float64 `json:"level"`
+	Mode        string  `json:"mode"`
+}
+
+type ConvolverState struct {
+	On           bool    `json:"on"`
+	KernelPath   string  `json:"kernelPath"`
+	CrossChannel float64 `json:"crossChannel"`
+}
+
+type DDCState struct {
+	On          bool      `json:"on"`
+	Coeffs44100 []float64 `json:"coeffs44100"`
+	Coeffs48000 []float64 `json:"coeffs48000"`
+}
+
+type AGCState struct {
+	On        bool    `json:"on"`
+	Ratio     float64 `json:"ratio"`
+	Volume    float64 `json:"volume"`
+	MaxScaler float64 `json:"maxScaler"`
+}
+
+type DynamicSystemState struct {
+	On          bool    `json:"on"`
+	XCoeffsLow  int     `json:"xCoeffsLow"`
+	XCoeffsHigh int     `json:"xCoeffsHigh"`
+	YCoeffsLow  int     `json:"yCoeffsLow"`
+	YCoeffsHigh int     `json:"yCoeffsHigh"`
+	SideGainX   float64 `json:"sideGainX"`
+	SideGainY   float64 `json:"sideGainY"`
+	Strength    float64 `json:"strength"`
+}
+
+type SpectrumExtensionState struct {
+	On                 bool    `json:"on"`
+	ReferenceFrequency int     `json:"referenceFrequency"`
+	Exciter            float64 `json:"exciter"`
+}
+
+type FieldSurroundState struct {
+	On       bool    `json:"on"`
+	Widening float64 `json:"widening"`
+	MidImage float64 `json:"midImage"`
+	Depth    int     `json:"depth"`
+}
+
+type DiffSurroundState struct {
+	On    bool    `json:"on"`
+	Delay float64 `json:"delay"`
+}
+
+type CureState struct {
+	On             bool `json:"on"`
+	StrengthPreset int  `json:"strengthPreset"`
+}
+
+type TubeSimulatorState struct {
+	On bool `json:"on"`
+}
+
+type AnalogXState struct {
+	On   bool `json:"on"`
+	Mode int  `json:"mode"`
+}
+
+type OutputState struct {
+	Pan     float64 `json:"pan"`
+	Limiter float64 `json:"limiter"`
+}
+
+type FETCompressorState struct {
+	On          bool    `json:"on"`
+	Threshold   float64 `json:"threshold"`
+	Ratio       float64 `json:"ratio"`
+	Knee        float64 `json:"knee"`
+	AutoKnee    bool    `json:"autoKnee"`
+	Gain        float64 `json:"gain"`
+	AutoGain    bool    `json:"autoGain"`
+	Attack      float64 `json:"attack"`
+	AutoAttack  bool    `json:"autoAttack"`
+	Release     float64 `json:"release"`
+	AutoRelease bool    `json:"autoRelease"`
+	KneeMulti   float64 `json:"kneeMulti"`
+	MaxAttack   float64 `json:"maxAttack"`
+	MaxRelease  float64 `json:"maxRelease"`
+	Crest       float64 `json:"crest"`
+	Adapt       float64 `json:"adapt"`
+	NoClip      bool    `json:"noClip"`
+}
+
+type SpeakerCorrectionState struct {
+	On bool `json:"on"`
+}
+
 // DSPState is the complete serializable app state.
 type DSPState struct {
-	Master      MasterState      `json:"master"`
-	XBass       XBassState       `json:"xBass"`
-	XClarity    XClarityState    `json:"xClarity"`
-	Surround3D  Surround3DState  `json:"surround3D"`
-	Reverb      ReverbParams     `json:"reverb"`
-	ReverbPanel ReverbPanelState `json:"reverbPanel"`
-	Mode        string           `json:"mode"` // "music" | "movie" | "freestyle"
-	EqOn        bool             `json:"eqOn"`
-	Equalizer   []float64        `json:"equalizer"`
+	Master            MasterState            `json:"master"`
+	Output            OutputState            `json:"output"`
+	XBass             XBassState             `json:"xBass"`
+	XBassMono         XBassMonoState         `json:"xBassMono"`
+	XClarity          XClarityState          `json:"xClarity"`
+	Surround3D        Surround3DState        `json:"surround3D"`
+	Reverb            ReverbParams           `json:"reverb"`
+	ReverbPanel       ReverbPanelState       `json:"reverbPanel"`
+	Convolver         ConvolverState         `json:"convolver"`
+	DDC               DDCState               `json:"ddc"`
+	AGC               AGCState               `json:"agc"`
+	DynamicSystem     DynamicSystemState     `json:"dynamicSystem"`
+	SpectrumExtension SpectrumExtensionState `json:"spectrumExtension"`
+	FieldSurround     FieldSurroundState     `json:"fieldSurround"`
+	DiffSurround      DiffSurroundState      `json:"diffSurround"`
+	Cure              CureState              `json:"cure"`
+	TubeSimulator     TubeSimulatorState     `json:"tubeSimulator"`
+	AnalogX           AnalogXState           `json:"analogX"`
+	FETCompressor     FETCompressorState     `json:"fetCompressor"`
+	SpeakerCorrection SpeakerCorrectionState `json:"speakerCorrection"`
+	Mode              string                 `json:"mode"` // "music" | "movie" | "freestyle"
+	EqOn              bool                   `json:"eqOn"`
+	Equalizer         []float64              `json:"equalizer"`
 }
 
 // defaultState returns factory-reset values matching the original WinForms UI.
@@ -107,8 +235,18 @@ func defaultState() DSPState {
 			PreVol:  0.0,
 			PostVol: 12.00,
 		},
+		Output: OutputState{
+			Pan:     0.0,
+			Limiter: 1.0,
+		},
 		XBass: XBassState{
 			On:          true,
+			SpeakerSize: 5,
+			Level:       0.0,
+			Mode:        "Natural Bass",
+		},
+		XBassMono: XBassMonoState{
+			On:          false,
 			SpeakerSize: 5,
 			Level:       0.0,
 			Mode:        "Natural Bass",
@@ -141,6 +279,80 @@ func defaultState() DSPState {
 			Size:     40,
 			WetMix:   50,
 		},
+		Convolver: ConvolverState{
+			On:           false,
+			KernelPath:   "",
+			CrossChannel: 0,
+		},
+		DDC: DDCState{
+			On:          false,
+			Coeffs44100: []float64{},
+			Coeffs48000: []float64{},
+		},
+		AGC: AGCState{
+			On:        false,
+			Ratio:     1.0,
+			Volume:    1.0,
+			MaxScaler: 1.0,
+		},
+		DynamicSystem: DynamicSystemState{
+			On:          false,
+			XCoeffsLow:  120,
+			XCoeffsHigh: 120,
+			YCoeffsLow:  200,
+			YCoeffsHigh: 200,
+			SideGainX:   0.0,
+			SideGainY:   0.0,
+			Strength:    0.0,
+		},
+		SpectrumExtension: SpectrumExtensionState{
+			On:                 false,
+			ReferenceFrequency: 7600,
+			Exciter:            0.0,
+		},
+		FieldSurround: FieldSurroundState{
+			On:       false,
+			Widening: 0.0,
+			MidImage: 0.0,
+			Depth:    0,
+		},
+		DiffSurround: DiffSurroundState{
+			On:    false,
+			Delay: 0.0,
+		},
+		Cure: CureState{
+			On:             false,
+			StrengthPreset: 0,
+		},
+		TubeSimulator: TubeSimulatorState{
+			On: false,
+		},
+		AnalogX: AnalogXState{
+			On:   false,
+			Mode: 0,
+		},
+		FETCompressor: FETCompressorState{
+			On:          false,
+			Threshold:   0.0,
+			Ratio:       1.0,
+			Knee:        0.0,
+			AutoKnee:    false,
+			Gain:        0.0,
+			AutoGain:    false,
+			Attack:      0.0,
+			AutoAttack:  false,
+			Release:     0.0,
+			AutoRelease: false,
+			KneeMulti:   1.0,
+			MaxAttack:   0.0,
+			MaxRelease:  0.0,
+			Crest:       0.0,
+			Adapt:       0.0,
+			NoClip:      false,
+		},
+		SpeakerCorrection: SpeakerCorrectionState{
+			On: false,
+		},
 	}
 }
 
@@ -164,16 +376,42 @@ func NewApp() *App {
 	}
 }
 
-// startup is called when the app starts.
+// startup is called when the Wails app starts.
+// Order:
+//  1. Try to load ViPERDSP.dll for the direct C++ path.
+//  2. Try to open shared memory for the APO path.
+//  3. Push the initial state to whichever paths are available.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	if err := a.dsp.SyncSharedMemory(); err != nil {
-		log.Printf("⚠️ No se pudo conectar con el Driver (SharedMem): %v", err)
+	// ── 1. Direct DLL path ───────────────────────────────────────────────────
+	directReady := false
+	exePath, err := os.Executable()
+	if err == nil {
+		dllPath := filepath.Join(filepath.Dir(exePath), "ViPERDSP.dll")
+		if err := a.dsp.LoadDLLPath(dllPath); err != nil {
+			logV("dll unavailable: %v", err)
+		} else {
+			directReady = true
+		}
 	}
-	a.synchronize() // Carga inicial de parámetros
 
-	log.Printf("🤖 Backend iniciado. Estado del Driver: %v", a.CheckDriver())
+	// ── 2. Shared memory path (APO/Hydrogen fallback) ────────────────────────
+	if err := a.dsp.SyncSharedMemory(); err != nil {
+		logV("shared memory unavailable: %v", err)
+	}
+
+	// ── 3. Push initial state ────────────────────────────────────────────────
+	a.synchronize()
+
+	logV("ready driver=%t direct=%t", a.CheckDriver(), directReady)
+}
+
+// shutdown is called when the Wails app is closing.
+// Releases DLL and shared memory handles cleanly.
+func (a *App) shutdown(ctx context.Context) {
+	logV("shutdown")
+	a.dsp.Close()
 }
 
 // synchronize envía el estado actual de Go al driver de Windows
@@ -192,70 +430,126 @@ func (a *App) CheckDriver() bool {
 // SetDriverStatus permite instalar o desinstalar el driver desde la App
 func (a *App) SetDriverStatus(install bool) bool {
 	if install {
-		log.Println("Iniciando instalación del driver APO...")
+		if err := a.drv.RequireAdmin(); err != nil {
+			a.emitToast("Se necesitan permisos de administrador para instalar ViPER.", "warning")
+			logV("install blocked: admin required")
+			return false
+		}
+
 		exePath, err := os.Executable()
 		if err != nil {
-			log.Printf("failed to get executable path: %v", err)
+			logV("install failed: executable path: %v", err)
+			a.emitToast("No se pudo ubicar la carpeta de la aplicación.", "error")
 			return false
 		}
-		appDir := filepath.Dir(exePath)
-		driverPath := filepath.Join(appDir, "Hydrogen_Inst.dll")
-		system32Path := filepath.Join(os.Getenv("SystemRoot"), "System32", "Hydrogen_Inst.dll")
 
-		var chosenPath string
-
-		// If we have an embedded binary, write it out and use it
-		if len(driverBinary) > 0 {
-			log.Printf("Portable Mode: extracting driver to %s", driverPath)
-			if err := os.WriteFile(driverPath, driverBinary, 0644); err != nil {
-				log.Printf("failed to extract driver: %v", err)
-				return false
-			}
-			// try to copy to System32 as well (best-effort)
-			if err := os.WriteFile(system32Path, driverBinary, 0644); err != nil {
-				log.Printf("⚠️ Could not copy to System32: %v", err)
-			}
-			chosenPath = driverPath
-		} else {
-			// No embedded DLL — prefer existing copies
-			if _, err := os.Stat(driverPath); err == nil {
-				chosenPath = driverPath
-			} else if _, err := os.Stat(system32Path); err == nil {
-				chosenPath = system32Path
+		resolution := resolveViPERDSPDLL(filepath.Dir(exePath))
+		if resolution.path == "" {
+			if len(resolution.emptyPaths) > 0 {
+				a.emitToast("ViPERDSP.dll está vacío. Recompílalo o reemplázalo antes de instalar.", "error")
+				logV("install blocked: empty dll at %s", strings.Join(resolution.emptyPaths, ", "))
 			} else {
-				log.Printf("❌ Hydrogen_Inst.dll not found. Place the DLL in %s or %s, or run the provided patcher.", driverPath, system32Path)
-				return false
+				a.emitToast("No se encontró ViPERDSP.dll dentro de la carpeta del ejecutable.", "error")
+				logV("install blocked: dll not found in %s", strings.Join(resolution.searchPaths, ", "))
 			}
-		}
-
-		if err := a.drv.RegisterAPO(chosenPath); err != nil {
-			log.Printf("failed to register APO: %v", err)
 			return false
 		}
 
-		// Attempt to attach the APO to the default playback endpoint as a fallback
+		if err := a.drv.RegisterAPO(resolution.path); err != nil {
+			logV("install failed: register apo: %v", err)
+			a.emitToast("No se pudo registrar el driver ViPER.", "error")
+			return false
+		}
+
 		if err := a.drv.AttachToDefaultEndpoint(); err != nil {
-			log.Printf("⚠️ Could not attach APO to default endpoint: %v", err)
-		} else {
-			log.Println("✓ APO attached to default endpoint")
+			logV("attach default endpoint skipped: %v", err)
 		}
 
 		if err := a.drv.RestartAudioEngine(); err != nil {
-			log.Printf("failed to restart audio engine: %v", err)
+			logV("install failed: restart audio engine: %v", err)
+			a.emitToast("ViPER se registró, pero no pudo reiniciar el motor de audio.", "warning")
 			return false
 		}
-		log.Println("Inicializando memoria compartida post-instalación...")
+
 		if err := a.dsp.SyncSharedMemory(); err != nil {
-			log.Printf("⚠️ Error init shared mem after install: %v", err)
+			logV("post-install shared memory unavailable: %v", err)
 		} else {
 			a.synchronize()
 		}
+		a.emitToast("ViPER quedó instalado correctamente.", "success")
+		logV("install ok: %s", resolution.path)
 		return true
 
 	} else {
-		log.Println("Desinstalando driver APO...")
-		return a.drv.UnregisterAPO() == nil && a.drv.RestartAudioEngine() == nil
+		if err := a.drv.RequireAdmin(); err != nil {
+			a.emitToast("Se necesitan permisos de administrador para desinstalar ViPER.", "warning")
+			logV("uninstall blocked: admin required")
+			return false
+		}
+		if err := a.drv.UnregisterAPO(); err != nil {
+			logV("uninstall failed: %v", err)
+			a.emitToast("No se pudo desinstalar el driver ViPER.", "error")
+			return false
+		}
+		if err := a.drv.RestartAudioEngine(); err != nil {
+			logV("uninstall restart failed: %v", err)
+			a.emitToast("ViPER se quitó, pero no se pudo reiniciar el motor de audio.", "warning")
+			return false
+		}
+		a.emitToast("ViPER fue desinstalado.", "success")
+		logV("uninstall ok")
+		return true
 	}
+}
+
+func (a *App) emitToast(message, tone string) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "app:toast", toastMessage{
+		Message: message,
+		Tone:    tone,
+	})
+}
+
+func resolveViPERDSPDLL(appDir string) dllResolution {
+	candidates := driverSearchPaths(appDir)
+	result := dllResolution{searchPaths: candidates}
+
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			continue
+		}
+		if info.Size() > 0 {
+			result.path = path
+			return result
+		}
+		result.emptyPaths = append(result.emptyPaths, path)
+	}
+
+	return result
+}
+
+func driverSearchPaths(appDir string) []string {
+	paths := []string{
+		filepath.Join(appDir, "ViPERDSP.dll"),
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		cleaned := filepath.Clean(path)
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		unique = append(unique, cleaned)
+	}
+	return unique
 }
 
 // FixDriver ha sido eliminada ya que su lógica se ha integrado en SetDriverStatus
@@ -266,13 +560,7 @@ func (a *App) SetDriverStatus(install bool) bool {
 // RestartAudioServices ha sido eliminada ya que su lógica se ha delegado al DriverManager.
 
 func (a *App) PatchDefaultEndpoint() error {
-	// Esta ruta varía según el ID de tu tarjeta de sonido (GUID del Endpoint)
-	// Para hacerlo automático, habría que iterar sobre:
-	// HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render
-
-	log.Println("Buscando dispositivos de audio para parchear...")
-	// Por ahora, lo más seguro es usar 'Equalizer APO' o el configurador original
-	// para marcar el check del dispositivo una sola vez.
+	logV("patch endpoint requested")
 	return nil
 }
 
@@ -380,6 +668,108 @@ func (a *App) SetReverbPanel(p ReverbPanelState) {
 	a.state.ReverbPanel = p
 	a.synchronize()
 }
+
+func (a *App) SetOutput(s OutputState) {
+	s.Pan = clamp(s.Pan, -1.0, 1.0)
+	s.Limiter = clamp(s.Limiter, 0.0, 1.0)
+	a.state.Output = s
+	a.synchronize()
+}
+
+func (a *App) SetXBassMono(s XBassMonoState) {
+	s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
+	s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
+	a.state.XBassMono = s
+	a.synchronize()
+}
+
+func (a *App) SetConvolver(s ConvolverState) {
+	s.CrossChannel = clamp(s.CrossChannel, 0.0, 1.0)
+	a.state.Convolver = s
+	a.synchronize()
+}
+
+func (a *App) SetDDC(s DDCState) {
+	s.Coeffs44100 = sanitizeCoeffArray(s.Coeffs44100)
+	s.Coeffs48000 = sanitizeCoeffArray(s.Coeffs48000)
+	a.state.DDC = s
+	a.synchronize()
+}
+
+func (a *App) SetAGC(s AGCState) {
+	s.Ratio = clamp(s.Ratio, 0.0, 20.0)
+	s.Volume = clamp(s.Volume, 0.0, 20.0)
+	s.MaxScaler = clamp(s.MaxScaler, 0.0, 20.0)
+	a.state.AGC = s
+	a.synchronize()
+}
+
+func (a *App) SetDynamicSystem(s DynamicSystemState) {
+	s.SideGainX = clamp(s.SideGainX, -20.0, 20.0)
+	s.SideGainY = clamp(s.SideGainY, -20.0, 20.0)
+	s.Strength = clamp(s.Strength, -20.0, 20.0)
+	a.state.DynamicSystem = s
+	a.synchronize()
+}
+
+func (a *App) SetSpectrumExtension(s SpectrumExtensionState) {
+	s.ReferenceFrequency = clampInt(s.ReferenceFrequency, 0, 24000)
+	s.Exciter = clamp(s.Exciter, 0.0, 20.0)
+	a.state.SpectrumExtension = s
+	a.synchronize()
+}
+
+func (a *App) SetFieldSurround(s FieldSurroundState) {
+	s.Widening = clamp(s.Widening, 0.0, 1.0)
+	s.MidImage = clamp(s.MidImage, 0.0, 1.0)
+	s.Depth = clampInt(s.Depth, 0, 100)
+	a.state.FieldSurround = s
+	a.synchronize()
+}
+
+func (a *App) SetDiffSurround(s DiffSurroundState) {
+	s.Delay = clamp(s.Delay, 0.0, 20.0)
+	a.state.DiffSurround = s
+	a.synchronize()
+}
+
+func (a *App) SetCure(s CureState) {
+	s.StrengthPreset = clampInt(s.StrengthPreset, 0, 2)
+	a.state.Cure = s
+	a.synchronize()
+}
+
+func (a *App) SetTubeSimulator(s TubeSimulatorState) {
+	a.state.TubeSimulator = s
+	a.synchronize()
+}
+
+func (a *App) SetAnalogX(s AnalogXState) {
+	s.Mode = clampInt(s.Mode, 0, 8)
+	a.state.AnalogX = s
+	a.synchronize()
+}
+
+func (a *App) SetFETCompressor(s FETCompressorState) {
+	s.Ratio = clamp(s.Ratio, 0.0, 20.0)
+	s.Knee = clamp(s.Knee, 0.0, 20.0)
+	s.Gain = clamp(s.Gain, -24.0, 24.0)
+	s.Attack = clamp(s.Attack, 0.0, 100.0)
+	s.Release = clamp(s.Release, 0.0, 100.0)
+	s.KneeMulti = clamp(s.KneeMulti, 0.0, 20.0)
+	s.MaxAttack = clamp(s.MaxAttack, 0.0, 100.0)
+	s.MaxRelease = clamp(s.MaxRelease, 0.0, 100.0)
+	s.Crest = clamp(s.Crest, 0.0, 20.0)
+	s.Adapt = clamp(s.Adapt, 0.0, 20.0)
+	a.state.FETCompressor = s
+	a.synchronize()
+}
+
+func (a *App) SetSpeakerCorrection(s SpeakerCorrectionState) {
+	a.state.SpeakerCorrection = s
+	a.synchronize()
+}
+
 func (a *App) SetEqBand(index int, db float64) {
 	if index >= 0 && index < len(a.state.Equalizer) {
 		// 1. Actualizamos el estado "bonito" (el que entiende tu frontend y Go)
@@ -392,9 +782,7 @@ func (a *App) SetEqBand(index int, db float64) {
 			// Aquí es donde sucede la magia: ApplyChanges ahora debe internamente
 			// llamar a fillBuffer para convertir tu state en el array de 256
 			if err := a.dsp.ApplyChanges(a.state); err != nil {
-				fmt.Printf("❌ ERROR APO: %v\n", err)
-			} else {
-				fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
+				logV("eq apply failed: %v", err)
 			}
 
 			lastUpdate = time.Now()
@@ -406,31 +794,6 @@ func (a *App) SetEqBand(index int, db float64) {
 	}
 }
 
-/*
-func (a *App) SetEqBand(index int, db float64) {
-	if index >= 0 && index < len(a.state.Equalizer) {
-		a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
-
-		params := VIPER_DSP_PARAMS{
-			Enabled:   1.0,
-			PreVol:    float32(a.state.Master.PreVol),
-			PostVol:   float32(a.state.Master.PostVol),
-			EqEnabled: 1.0,
-		}
-
-		for i := 0; i < 18; i++ {
-			params.EqBands[i] = float32(a.state.Equalizer[i])
-		}
-		if time.Since(lastUpdate) > 16*time.Millisecond {
-			a.dsp.ApplyChanges(a.state)
-			lastUpdate = time.Now()
-			fmt.Printf("✅ Banda %d ajustada a %.2f dB\n", index, db)
-		} else {
-			fmt.Printf("❌ ERROR APO: %v\n", "Demasiado rápido para aplicar cambios, omitiendo banda "+fmt.Sprint(index))
-		}
-	}
-}
-*/
 // ResetEq pone todas las bandas a 0
 func (a *App) ResetEq() {
 	for i := range a.state.Equalizer {
@@ -447,10 +810,6 @@ func (a *App) SetFullEq(bands []float64) {
 		}
 		a.synchronize()
 	}
-}
-
-func (a *App) writeToSharedMemory(params *VIPER_DSP_PARAMS) error {
-	return a.dsp.ApplyChanges(a.state)
 }
 
 // CommitDSPChanges forces an explicit flush of the current state to the APO.
@@ -490,7 +849,7 @@ func (a *App) CommitDSPChanges() error {
 func (a *App) CommitDSPChangesAsync() {
 	go func() {
 		if err := a.CommitDSPChanges(); err != nil {
-			log.Printf("⚠️ CommitDSPChangesAsync error: %v", err)
+			logV("commit async failed: %v", err)
 		}
 	}()
 }
@@ -505,12 +864,12 @@ func (a *App) InstallAPOOnDefaultDevice() error {
 	}
 
 	if err := dm.AttachToDefaultEndpoint(); err != nil {
-		log.Printf("⚠️ AttachToDefaultEndpoint failed: %v", err)
+		logV("attach default endpoint failed: %v", err)
 		return err
 	}
 
 	if err := a.drv.RestartAudioEngine(); err != nil {
-		log.Printf("⚠️ RestartAudioEngine failed after attach: %v", err)
+		logV("restart audio engine failed after attach: %v", err)
 		return err
 	}
 
@@ -529,7 +888,7 @@ func getPresetsDir() string {
 	// 1. Obtenemos la ruta completa del ejecutable (.exe)
 	exePath, err := os.Executable()
 	if err != nil {
-		log.Println("Error obteniendo la ruta del exe:", err)
+		logV("preset dir fallback: %v", err)
 		return "presets" // Fallback a relativo si falla
 	}
 
@@ -564,11 +923,12 @@ func (a *App) LoadPreset(name string) (DSPState, error) {
 	if err != nil {
 		return a.state, fmt.Errorf("read preset: %w", err)
 	}
-	var s DSPState
-	if err := json.Unmarshal(data, &s); err != nil {
+	s, err := decodePresetState(data)
+	if err != nil {
 		return a.state, fmt.Errorf("unmarshal: %w", err)
 	}
 	a.state = s
+	a.synchronize()
 	return a.state, nil
 }
 
@@ -608,4 +968,83 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func sanitizeCoeffArray(values []float64) []float64 {
+	if len(values) == 0 {
+		return []float64{}
+	}
+
+	count := (len(values) / 5) * 5
+	if count == 0 {
+		return []float64{}
+	}
+
+	clean := make([]float64, count)
+	copy(clean, values[:count])
+	return clean
+}
+
+func decodePresetState(data []byte) (DSPState, error) {
+	s := defaultState()
+	if err := json.Unmarshal(data, &s); err != nil {
+		return DSPState{}, err
+	}
+	return normalizeDSPState(s), nil
+}
+
+func normalizeDSPState(s DSPState) DSPState {
+	defaults := defaultState()
+
+	s.Master.PreVol = clamp(s.Master.PreVol, MinPreVol, MaxPreVol)
+	s.Master.PostVol = clamp(s.Master.PostVol, MinPostVol, MaxPostVol)
+	s.Output.Pan = clamp(s.Output.Pan, -1.0, 1.0)
+	s.Output.Limiter = clamp(s.Output.Limiter, 0.0, 1.0)
+
+	s.XBass.Level = clamp(s.XBass.Level, MinXBassLevel, MaxXBassLevel)
+	s.XBass.SpeakerSize = clampInt(s.XBass.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
+	s.XBassMono.Level = clamp(s.XBassMono.Level, MinXBassLevel, MaxXBassLevel)
+	s.XBassMono.SpeakerSize = clampInt(s.XBassMono.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
+	s.XClarity.Level = clamp(s.XClarity.Level, MinXClarityLevel, MaxXClarityLevel)
+	s.Surround3D.SpaceSize = clampInt(s.Surround3D.SpaceSize, MinSpaceSize, MaxSpaceSize)
+	s.Surround3D.ImageSize = clampInt(s.Surround3D.ImageSize, MinImageSize, MaxImageSize)
+
+	s.Convolver.CrossChannel = clamp(s.Convolver.CrossChannel, 0.0, 1.0)
+	s.DDC.Coeffs44100 = sanitizeCoeffArray(s.DDC.Coeffs44100)
+	s.DDC.Coeffs48000 = sanitizeCoeffArray(s.DDC.Coeffs48000)
+	s.AGC.Ratio = clamp(s.AGC.Ratio, 0.0, 20.0)
+	s.AGC.Volume = clamp(s.AGC.Volume, 0.0, 20.0)
+	s.AGC.MaxScaler = clamp(s.AGC.MaxScaler, 0.0, 20.0)
+	s.DynamicSystem.SideGainX = clamp(s.DynamicSystem.SideGainX, -20.0, 20.0)
+	s.DynamicSystem.SideGainY = clamp(s.DynamicSystem.SideGainY, -20.0, 20.0)
+	s.DynamicSystem.Strength = clamp(s.DynamicSystem.Strength, -20.0, 20.0)
+	s.SpectrumExtension.ReferenceFrequency = clampInt(s.SpectrumExtension.ReferenceFrequency, 0, 24000)
+	s.SpectrumExtension.Exciter = clamp(s.SpectrumExtension.Exciter, 0.0, 20.0)
+	s.FieldSurround.Widening = clamp(s.FieldSurround.Widening, 0.0, 1.0)
+	s.FieldSurround.MidImage = clamp(s.FieldSurround.MidImage, 0.0, 1.0)
+	s.FieldSurround.Depth = clampInt(s.FieldSurround.Depth, 0, 100)
+	s.DiffSurround.Delay = clamp(s.DiffSurround.Delay, 0.0, 20.0)
+	s.Cure.StrengthPreset = clampInt(s.Cure.StrengthPreset, 0, 2)
+	s.AnalogX.Mode = clampInt(s.AnalogX.Mode, 0, 8)
+	s.FETCompressor.Ratio = clamp(s.FETCompressor.Ratio, 0.0, 20.0)
+	s.FETCompressor.Knee = clamp(s.FETCompressor.Knee, 0.0, 20.0)
+	s.FETCompressor.Gain = clamp(s.FETCompressor.Gain, -24.0, 24.0)
+	s.FETCompressor.Attack = clamp(s.FETCompressor.Attack, 0.0, 100.0)
+	s.FETCompressor.Release = clamp(s.FETCompressor.Release, 0.0, 100.0)
+	s.FETCompressor.KneeMulti = clamp(s.FETCompressor.KneeMulti, 0.0, 20.0)
+	s.FETCompressor.MaxAttack = clamp(s.FETCompressor.MaxAttack, 0.0, 100.0)
+	s.FETCompressor.MaxRelease = clamp(s.FETCompressor.MaxRelease, 0.0, 100.0)
+	s.FETCompressor.Crest = clamp(s.FETCompressor.Crest, 0.0, 20.0)
+	s.FETCompressor.Adapt = clamp(s.FETCompressor.Adapt, 0.0, 20.0)
+
+	if len(s.Equalizer) != len(defaults.Equalizer) {
+		eq := make([]float64, len(defaults.Equalizer))
+		copy(eq, s.Equalizer)
+		s.Equalizer = eq
+	}
+	for i := range s.Equalizer {
+		s.Equalizer[i] = clamp(s.Equalizer[i], MinEqBand, MaxEqBand)
+	}
+
+	return s
 }

@@ -1,319 +1,783 @@
+//go:build windows
+
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
-	"log"
-	"sync/atomic"
+	"math"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 const (
-	SharedMemName = "Global\\ViPER4Windows_SharedMemory" // ← cambiado
-	EventName     = "Global\\ViPER4Windows_Event"        // ← nuevo
-
-	SharedMemSize = 4096 // la mayoría de forks usan exactamente 4096 bytes
+	sharedMemName   = "Global\\ViPER4Windows_SharedMemory"
+	sharedEventName = "Global\\ViPER4Windows_Event"
+	sharedMemBytes  = 1024
+	paramCount      = sharedMemBytes / 4
 )
-
-type VIPER_DSP_PARAMS struct {
-	Params [256]float32
-}
 
 const (
-	IDX_ENABLED            = 0
-	IDX_PREVOL             = 1
-	IDX_POSTVOL            = 2
-	IDX_EQ_ENABLED         = 4
-	IDX_EQ_BANDS           = 5 // 18 bandas consecutivas
-	IDX_XBASS_ENABLED      = 23
-	IDX_XBASS_MODE         = 24
-	IDX_XBASS_SPKSIZE      = 25
-	IDX_XBASS_GAIN         = 26
-	IDX_XCLARITY_ENABLED   = 27
-	IDX_XCLARITY_MODE      = 28
-	IDX_XCLARITY_GAIN      = 29
-	IDX_SURROUND_ENABLED   = 30
-	IDX_SURROUND_SIZE      = 31
-	IDX_REVERB_ENABLED     = 32
-	IDX_REVERB_ROOM        = 33
-	IDX_REVERB_DAMP        = 34
-	IDX_REVERB_MIX         = 35
-	IDX_CONVOLVER_ENABLED  = 36
-	IDX_CURETECH_ENABLED   = 37
-	IDX_CURETECH_LEVEL     = 38
-	IDX_ANALOGX_ENABLED    = 39
-	IDX_ANALOGX_MODE       = 40
-	IDX_SPEAKEROPT_ENABLED = 41
-	IDX_SPEAKEROPT_MODE    = 42
-	IDX_SPEAKEROPT_GAIN    = 43
-	IDX_LIMITER_ENABLED    = 44
-	IDX_LIMITER_THRESHOLD  = 45
-	IDX_MAX                = 255
-	// ... otros índices para efectos adicionales
-
+	paramHPConvolverEnable      = 0x10100
+	paramHPConvolverSetKernel   = 0x10101
+	paramHPConvolverCrossChan   = 0x10105
+	paramHPDDCEnable            = 0x10110
+	paramHPDDCCoefficients      = 0x10111
+	paramHPEQEnable             = 0x10120
+	paramHPEQBandLevel          = 0x10121
+	paramHPEQBandCount          = 0x10122
+	paramHPReverbEnable         = 0x10130
+	paramHPReverbRoomSize       = 0x10131
+	paramHPReverbWidth          = 0x10132
+	paramHPReverbDampen         = 0x10133
+	paramHPReverbWet            = 0x10134
+	paramHPReverbDry            = 0x10135
+	paramHPAGCEnable            = 0x10140
+	paramHPAGCRatio             = 0x10141
+	paramHPAGCVolume            = 0x10142
+	paramHPAGCMaxScaler         = 0x10143
+	paramHPDynamicSystemEnable  = 0x10150
+	paramHPDynamicSystemXCoeffs = 0x10151
+	paramHPDynamicSystemYCoeffs = 0x10152
+	paramHPDynamicSystemSide    = 0x10153
+	paramHPDynamicSystemPower   = 0x10154
+	paramHPBassEnable           = 0x10160
+	paramHPBassMode             = 0x10161
+	paramHPBassFrequency        = 0x10162
+	paramHPBassGain             = 0x10163
+	paramHPBassMonoEnable       = 0x10164
+	paramHPBassMonoMode         = 0x10165
+	paramHPBassMonoFrequency    = 0x10166
+	paramHPBassMonoGain         = 0x10167
+	paramHPBassAntiPop          = 0x10168
+	paramHPBassMonoAntiPop      = 0x10169
+	paramHPClarityEnable        = 0x10170
+	paramHPClarityMode          = 0x10171
+	paramHPClarityGain          = 0x10172
+	paramHPHeadphoneEnable      = 0x10180
+	paramHPHeadphoneStrength    = 0x10181
+	paramHPSpectrumEnable       = 0x10190
+	paramHPSpectrumBark         = 0x10191
+	paramHPSpectrumExciter      = 0x10192
+	paramHPFieldEnable          = 0x101A0
+	paramHPFieldWidening        = 0x101A1
+	paramHPFieldMidImage        = 0x101A2
+	paramHPFieldDepth           = 0x101A3
+	paramHPDiffEnable           = 0x101B0
+	paramHPDiffDelay            = 0x101B1
+	paramHPCureEnable           = 0x101C0
+	paramHPCureStrength         = 0x101C1
+	paramHPTubeEnable           = 0x101D0
+	paramHPAnalogXEnable        = 0x101E0
+	paramHPAnalogXMode          = 0x101E1
+	paramHPOutputVolume         = 0x101F0
+	paramHPChannelPan           = 0x101F1
+	paramHPLimiter              = 0x101F2
+	paramHPFETEnable            = 0x10200
+	paramHPFETThreshold         = 0x10201
+	paramHPFETRatio             = 0x10202
+	paramHPFETKnee              = 0x10203
+	paramHPFETAutoKnee          = 0x10204
+	paramHPFETGain              = 0x10205
+	paramHPFETAutoGain          = 0x10206
+	paramHPFETAttack            = 0x10207
+	paramHPFETAutoAttack        = 0x10208
+	paramHPFETRelease           = 0x10209
+	paramHPFETAutoRelease       = 0x1020A
+	paramHPFETKneeMulti         = 0x1020B
+	paramHPFETMaxAttack         = 0x1020C
+	paramHPFETMaxRelease        = 0x1020D
+	paramHPFETCrest             = 0x1020E
+	paramHPFETAdapt             = 0x1020F
+	paramHPFETNoClip            = 0x10210
+	paramHPSpeakerCorrection    = 0x10420
 )
 
-/*
-	type VIPER_DSP_PARAMS struct {
-		// Master
-		Enabled float32
-		PreVol  float32
-		PostVol float32
+var speakerSizeToHz = [11]int{
+	20, 30, 40, 55, 70, 90, 115, 150, 200, 280, 380,
+}
 
-		// EQ (18 bandas)
-		EqEnabled float32
-		EqBands   [18]float32
+type paramBuf [paramCount]float32
 
-		// Bass
-		BassEnabled float32
-		BassMode    float32 // 0 = Natural, 1 = Pure
-		BassSpkSize float32
-		BassGain    float32
+const (
+	idxEnabled                  = 0
+	idxPreVol                   = 1
+	idxPostVol                  = 2
+	idxEQEnabled                = 4
+	idxEQBands                  = 5
+	idxXBassEnabled             = 23
+	idxXBassMode                = 24
+	idxXBassSpkSize             = 25
+	idxXBassGain                = 26
+	idxXClarEnabled             = 27
+	idxXClarMode                = 28
+	idxXClarGain                = 29
+	idxSurrEnabled              = 30
+	idxSurrSize                 = 31
+	idxRevEnabled               = 32
+	idxRevRoom                  = 33
+	idxRevDamp                  = 34
+	idxRevMix                   = 35
+	idxConvolverEnabled         = 36
+	idxCureEnabled              = 37
+	idxCureStrength             = 38
+	idxAnalogXEnabled           = 39
+	idxAnalogXMode              = 40
+	idxSpeakerCorrectionEnabled = 41
+	idxLimiterEnabled           = 44
+	idxLimiterValue             = 45
+)
 
-		// Clarity
-		ClarityEnabled float32
-		ClarityMode    float32 // 0=Natural, 1=OZone+, 2=X-HiFi
-		ClarityGain    float32
+type dispatchCmd struct {
+	param        int
+	val1         int
+	val2         int
+	val3         int
+	val4         int
+	arrSize      int
+	payload      []byte
+	onlyOnChange string
+}
 
-		// Surround
-		SurroundEnabled float32
-		SurroundSize    float32
+type payloadCache struct {
+	arrSize int
+	data    []byte
+}
 
-		// Reverb
-		ReverbEnabled float32
-		ReverbRoom    float32
-		ReverbDamp    float32
-		ReverbMix     float32
-
-		// Resto (padding)
-		_ [2003]float32 // mantiene exactamente 4096 bytes
-	}
-*/
 type DSPManager struct {
-	memHandle   windows.Handle
-	eventHandle windows.Handle
-	dataPtr     uintptr
-	params      *VIPER_DSP_PARAMS
-	connected   bool
+	mu sync.Mutex
 
-	activeBuf uint32
-	frontBuf  VIPER_DSP_PARAMS
-	backBuf   VIPER_DSP_PARAMS
+	dll       windows.Handle
+	viperInst uintptr
+
+	fnCreate        uintptr
+	fnDestroy       uintptr
+	fnSetSampleRate uintptr
+	fnReset         uintptr
+	fnDispatch      uintptr
+	fnProcess       uintptr
+	dllReady        bool
+
+	memHandle   windows.Handle
+	memView     uintptr
+	eventHandle windows.Handle
+	shmReady    bool
+
+	activeBuf uint8
+	frontBuf  paramBuf
+	backBuf   paramBuf
+	payloads  map[string]payloadCache
+}
+
+func (dm *DSPManager) LoadDLL(dir string) error {
+	return dm.LoadDLLPath(filepath.Join(dir, "ViPERDSP.dll"))
+}
+
+func (dm *DSPManager) LoadDLLPath(dllPath string) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if dm.dllReady {
+		return nil
+	}
+
+	if !fileExistsAndNotEmpty(dllPath) {
+		return fmt.Errorf("ViPERDSP.dll missing or empty: %s", dllPath)
+	}
+	h, err := windows.LoadLibrary(dllPath)
+	if err != nil {
+		return fmt.Errorf("LoadLibrary(%s): %w", dllPath, err)
+	}
+
+	type symbol struct {
+		name string
+		dst  *uintptr
+	}
+
+	symbols := []symbol{
+		{name: "viper_create", dst: &dm.fnCreate},
+		{name: "viper_destroy", dst: &dm.fnDestroy},
+		{name: "viper_set_sample_rate", dst: &dm.fnSetSampleRate},
+		{name: "viper_reset", dst: &dm.fnReset},
+		{name: "viper_dispatch", dst: &dm.fnDispatch},
+		{name: "viper_process", dst: &dm.fnProcess},
+	}
+
+	for _, sym := range symbols {
+		addr, symErr := windows.GetProcAddress(h, sym.name)
+		if symErr != nil {
+			windows.FreeLibrary(h)
+			return fmt.Errorf("GetProcAddress(%s): %w", sym.name, symErr)
+		}
+		*sym.dst = addr
+	}
+
+	ret, _, _ := syscall.SyscallN(dm.fnCreate)
+	if ret == 0 {
+		windows.FreeLibrary(h)
+		return fmt.Errorf("viper_create() returned NULL")
+	}
+
+	dm.dll = h
+	dm.viperInst = ret
+	dm.callSetSampleRate(44100)
+	dm.dllReady = true
+
+	logV("dll loaded: %s", dllPath)
+	return nil
 }
 
 func (dm *DSPManager) SyncSharedMemory() error {
-	// 1. Validar instalación
-	if !(&DriverManager{}).CheckInstallation() {
-		return fmt.Errorf("APO no instalado en el registro")
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if dm.shmReady {
+		return nil
 	}
 
-	// 2. CreateFileMapping (Si existe, lo abre; si no, lo crea)
-	// Usamos PAGE_READWRITE para tener control total
 	hMap, err := windows.CreateFileMapping(
 		windows.InvalidHandle,
 		nil,
 		windows.PAGE_READWRITE,
 		0,
-		1024, // Tamaño exacto de tus 256 floats
-		windows.StringToUTF16Ptr("Global\\ViPER4Windows_SharedMemory"),
+		sharedMemBytes,
+		windows.StringToUTF16Ptr(sharedMemName),
 	)
 	if err != nil {
-		dm.connected = false
-		return fmt.Errorf("error al mapear archivo: %v", err)
+		return fmt.Errorf("CreateFileMapping: %w", err)
 	}
 
-	// 3. MapViewOfFile - ¡IMPORTANTE!: Debe ser FILE_MAP_WRITE o FILE_MAP_ALL_ACCESS
-	ptr, err := windows.MapViewOfFile(hMap, windows.FILE_MAP_WRITE, 0, 0, 1024)
+	view, err := windows.MapViewOfFile(hMap, windows.FILE_MAP_WRITE, 0, 0, sharedMemBytes)
 	if err != nil {
 		windows.CloseHandle(hMap)
-		dm.connected = false
-		return fmt.Errorf("error al mapear vista: %v", err)
+		return fmt.Errorf("MapViewOfFile: %w", err)
 	}
 
-	// Guardamos los handles para evitar que el GC los limpie
+	hEvent, _ := windows.CreateEvent(nil, 0, 0, windows.StringToUTF16Ptr(sharedEventName))
+	if hEvent == 0 {
+		hEvent, _ = windows.OpenEvent(
+			windows.EVENT_MODIFY_STATE,
+			false,
+			windows.StringToUTF16Ptr(sharedEventName),
+		)
+	}
+
 	dm.memHandle = hMap
-	dm.params = (*VIPER_DSP_PARAMS)(unsafe.Pointer(ptr))
-
-	// 4. Sincronización del Evento
-	// Intentamos crearlo. Si ya existe, Windows nos da el handle al existente.
-	hEvent, err := windows.CreateEvent(nil, 0, 0, windows.StringToUTF16Ptr("Global\\ViPER4Windows_Event"))
-	if err != nil {
-		// Si falla crear, intentamos solo abrir
-		hEvent, _ = windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, windows.StringToUTF16Ptr("Global\\ViPER4Windows_Event"))
-	}
+	dm.memView = view
 	dm.eventHandle = hEvent
+	dm.shmReady = true
 
-	dm.connected = (dm.params != nil)
-	log.Printf("🚀 Motor de Memoria Sincronizado (Connected: %v)", dm.connected)
+	logV("shared memory ready (%d bytes)", sharedMemBytes)
 	return nil
 }
 
 func (dm *DSPManager) ApplyChanges(state DSPState) error {
-	if dm.connected && dm.params == nil {
-		return fmt.Errorf("shared memory no inicializada")
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if !dm.dllReady && !dm.shmReady {
+		return fmt.Errorf("no DSP path available (DLL not loaded, shared memory not mapped)")
 	}
 
-	// Double buffering (sin locks)
-	target := &dm.frontBuf
-	if atomic.LoadUint32(&dm.activeBuf) == 1 {
-		target = &dm.backBuf
+	if dm.dllReady {
+		dm.applyViaDLL(state)
 	}
 
-	dm.fillBuffer(target, state)
-
-	// Copia atómica
-	src := unsafe.Pointer(target)
-	dst := unsafe.Pointer(dm.params)
-	memmove(dst, src, SharedMemSize)
-
-	// === SEÑAL CRÍTICA ===
-	if dm.eventHandle != 0 {
-		windows.SetEvent(dm.eventHandle) // ← esto es lo que faltaba
+	if dm.shmReady {
+		target := dm.inactiveBuffer()
+		fillParamBuf(target, state)
+		dm.writeSharedMemory(target)
+		dm.activeBuf ^= 1
 	}
 
-	atomic.StoreUint32(&dm.activeBuf, 1-atomic.LoadUint32(&dm.activeBuf))
 	return nil
 }
 
-// fillBuffer populates a VIPER_DSP_PARAMS buffer from DSPState
-// This is separated from ApplyChanges to improve testability
-func (dm *DSPManager) fillBuffer(target *VIPER_DSP_PARAMS, state DSPState) {
-	// Limpiamos el buffer por si acaso
-	*target = VIPER_DSP_PARAMS{}
-
-	// --- MAREO DE ÍNDICES ---
-	target.Params[IDX_ENABLED] = 1.0
-	if !state.Master.Power {
-		target.Params[IDX_ENABLED] = 0.0
-	}
-
-	target.Params[IDX_PREVOL] = float32(state.Master.PreVol)
-	target.Params[IDX_POSTVOL] = float32(state.Master.PostVol)
-
-	// EQ
-	target.Params[IDX_EQ_ENABLED] = 1.0
-	for i := 0; i < len(state.Equalizer) && i < 18; i++ {
-		target.Params[IDX_EQ_BANDS+i] = float32(state.Equalizer[i])
-	}
-
-	// X-Bass
-	if state.XBass.On {
-		target.Params[IDX_XBASS_ENABLED] = 1.0
-		target.Params[IDX_XBASS_GAIN] = float32(state.XBass.Level)
-		target.Params[IDX_XBASS_SPKSIZE] = float32(state.XBass.SpeakerSize)
-	}
-
-	// X-Clarity
-	if state.XClarity.On {
-		target.Params[IDX_XCLARITY_ENABLED] = 1.0
-		target.Params[IDX_XCLARITY_GAIN] = float32(state.XClarity.Level)
-	}
-
-	// Reverb (El panel simplificado)
-	if state.Reverb.On {
-		target.Params[IDX_REVERB_ENABLED] = 1.0
-		target.Params[IDX_REVERB_MIX] = float32(state.Reverb.WetMix)
-	}
-}
-
-/*
-func (dm *DSPManager) fillBuffer(buffer *VIPER_DSP_PARAMS, state DSPState) {
-	// Master controls
-	buffer.Enabled = boolToFloat32(state.Master.Power)
-	buffer.PreVol = float32(state.Master.PreVol)
-	buffer.PostVol = float32(state.Master.PostVol)
-
-	// Equalizer
-	buffer.EqEnabled = boolToFloat32(state.EqOn)
-	for i := 0; i < 18 && i < len(state.Equalizer); i++ {
-		buffer.EqBands[i] = float32(state.Equalizer[i])
-	}
-
-	// ViPER Bass
-	buffer.BassEnabled = boolToFloat32(state.XBass.On)
-	buffer.BassGain = float32(state.XBass.Level)
-	buffer.BassSpkSize = float32(state.XBass.SpeakerSize)
-	buffer.BassMode = float32(parseBassMode(state.XBass.Mode))
-
-	// ViPER Clarity
-	buffer.ClarityEnabled = boolToFloat32(state.XClarity.On)
-	buffer.ClarityGain = float32(state.XClarity.Level)
-	buffer.ClarityMode = float32(parseClarityMode(state.XClarity.Mode))
-
-	// Surround 3D
-	buffer.SurroundEnabled = boolToFloat32(state.Surround3D.On)
-	buffer.SurroundSize = float32(state.Surround3D.SpaceSize)
-
-	// Reverb
-	buffer.ReverbEnabled = boolToFloat32(state.Reverb.On)
-	buffer.ReverbRoom = float32(state.Reverb.RoomSize)
-	buffer.ReverbDamp = float32(state.Reverb.Damping)
-	buffer.ReverbMix = float32(state.Reverb.WetMix)
-
-	// Additional effects (if state structure supports them)
-	// These are placeholders - implement based on actual DSPState
-	// buffer.ConvolverEnabled = 0.0
-	// buffer.CureTechEnabled = 0.0
-	// buffer.CureTechLevel = 0.0
-	// buffer.AnalogXEnabled = 0.0
-	// buffer.AnalogXMode = 0.0
-	// buffer.SpeakerOptEnabled = 0.0
-	// buffer.SpeakerOptMode = 0.0
-	// buffer.SpeakerOptGain = 0.0
-	// buffer.LimiterEnabled = 0.0
-	// buffer.LimiterThreshold = 0.0
-}
-*/
-
 func (dm *DSPManager) Close() {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if dm.viperInst != 0 && dm.fnDestroy != 0 {
+		syscall.SyscallN(dm.fnDestroy, dm.viperInst)
+		dm.viperInst = 0
+	}
+	if dm.dll != 0 {
+		windows.FreeLibrary(dm.dll)
+		dm.dll = 0
+	}
+	dm.fnCreate = 0
+	dm.fnDestroy = 0
+	dm.fnSetSampleRate = 0
+	dm.fnReset = 0
+	dm.fnDispatch = 0
+	dm.fnProcess = 0
+	dm.dllReady = false
+
 	if dm.eventHandle != 0 {
 		windows.CloseHandle(dm.eventHandle)
+		dm.eventHandle = 0
 	}
-	if dm.dataPtr != 0 {
-		windows.UnmapViewOfFile(dm.dataPtr)
+	if dm.memView != 0 {
+		windows.UnmapViewOfFile(dm.memView)
+		dm.memView = 0
 	}
 	if dm.memHandle != 0 {
 		windows.CloseHandle(dm.memHandle)
+		dm.memHandle = 0
 	}
-	dm.connected = false
-	log.Println("✓ Shared memory resources released")
+	dm.shmReady = false
+	dm.activeBuf = 0
+	dm.frontBuf = paramBuf{}
+	dm.backBuf = paramBuf{}
+	dm.payloads = nil
+
+	logV("dsp resources released")
 }
 
-// helper functions (boolToFloat32, parseBassMode, etc.)
+func (dm *DSPManager) SetSampleRate(rate uint32) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
 
-// boolToFloat32 converts boolean to float32 (0.0 or 1.0)
-func boolToFloat32(b bool) float32 {
+	if dm.dllReady {
+		dm.callSetSampleRate(rate)
+	}
+}
+
+func (dm *DSPManager) ResetEffects() {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if dm.dllReady && dm.fnReset != 0 && dm.viperInst != 0 {
+		syscall.SyscallN(dm.fnReset, dm.viperInst)
+		dm.payloads = nil
+	}
+}
+
+func (dm *DSPManager) callSetSampleRate(rate uint32) {
+	if dm.fnSetSampleRate == 0 || dm.viperInst == 0 {
+		return
+	}
+	syscall.SyscallN(dm.fnSetSampleRate, dm.viperInst, uintptr(rate))
+}
+
+func (dm *DSPManager) dispatch(param, val1, val2, val3, val4 int) {
+	dm.dispatchPayload(param, val1, val2, val3, val4, 0, nil)
+}
+
+func (dm *DSPManager) dispatchPayload(param, val1, val2, val3, val4, arrSize int, payload []byte) {
+	if !dm.dllReady || dm.fnDispatch == 0 || dm.viperInst == 0 {
+		return
+	}
+
+	var payloadPtr uintptr
+	if len(payload) > 0 {
+		payloadPtr = uintptr(unsafe.Pointer(&payload[0]))
+	}
+
+	syscall.SyscallN(
+		dm.fnDispatch,
+		dm.viperInst,
+		uintptr(param),
+		uintptr(int32(val1)),
+		uintptr(int32(val2)),
+		uintptr(int32(val3)),
+		uintptr(int32(val4)),
+		uintptr(arrSize),
+		payloadPtr,
+	)
+}
+
+func (dm *DSPManager) applyViaDLL(state DSPState) {
+	for _, cmd := range buildDLLCommands(state) {
+		if cmd.onlyOnChange != "" && !dm.shouldDispatchPayload(cmd.onlyOnChange, cmd.arrSize, cmd.payload) {
+			continue
+		}
+		dm.dispatchPayload(cmd.param, cmd.val1, cmd.val2, cmd.val3, cmd.val4, cmd.arrSize, cmd.payload)
+	}
+}
+
+func buildDLLCommands(state DSPState) []dispatchCmd {
+	cmds := make([]dispatchCmd, 0, 96)
+
+	postVolume := 0
+	if state.Master.Power {
+		postVolume = dbLinearCenti(state.Master.PostVol)
+	}
+	cmds = append(cmds, dispatchCmd{param: paramHPOutputVolume, val1: postVolume})
+	cmds = append(cmds, dispatchCmd{
+		param: paramHPChannelPan,
+		val1:  centi(clamp(state.Output.Pan, -1.0, 1.0)),
+	})
+	cmds = append(cmds, dispatchCmd{
+		param: paramHPLimiter,
+		val1:  centi(clamp(state.Output.Limiter, 0.0, 1.0)),
+	})
+
+	cmds = append(cmds, dispatchCmd{param: paramHPEQEnable, val1: boolInt(state.EqOn)})
+	cmds = append(cmds, dispatchCmd{param: paramHPEQBandCount, val1: 18})
+	for i := 0; i < len(state.Equalizer) && i < 18; i++ {
+		cmds = append(cmds, dispatchCmd{
+			param: paramHPEQBandLevel,
+			val1:  i,
+			val2:  centi(state.Equalizer[i]),
+		})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPBassEnable, val1: boolInt(state.XBass.On)})
+	if state.XBass.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPBassMode, val1: parseBassMode(state.XBass.Mode)},
+			dispatchCmd{param: paramHPBassFrequency, val1: speakerHz(state.XBass.SpeakerSize)},
+			dispatchCmd{param: paramHPBassGain, val1: centi(state.XBass.Level)},
+			dispatchCmd{param: paramHPBassAntiPop, val1: 1},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPBassMonoEnable, val1: boolInt(state.XBassMono.On)})
+	if state.XBassMono.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPBassMonoMode, val1: parseBassMode(state.XBassMono.Mode)},
+			dispatchCmd{param: paramHPBassMonoFrequency, val1: speakerHz(state.XBassMono.SpeakerSize)},
+			dispatchCmd{param: paramHPBassMonoGain, val1: centi(state.XBassMono.Level)},
+			dispatchCmd{param: paramHPBassMonoAntiPop, val1: 1},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPClarityEnable, val1: boolInt(state.XClarity.On)})
+	if state.XClarity.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPClarityMode, val1: parseClarityMode(state.XClarity.Mode)},
+			dispatchCmd{param: paramHPClarityGain, val1: centi(state.XClarity.Level)},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPHeadphoneEnable, val1: boolInt(state.Surround3D.On)})
+	if state.Surround3D.On {
+		cmds = append(cmds, dispatchCmd{
+			param: paramHPHeadphoneStrength,
+			val1:  clampInt(state.Surround3D.SpaceSize*10, 0, 100),
+		})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPReverbEnable, val1: boolInt(state.Reverb.On)})
+	if state.Reverb.On {
+		wet := clampInt(int(math.Round(state.Reverb.WetMix)), 0, 100)
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPReverbRoomSize, val1: clampInt(int(math.Round(state.Reverb.RoomSize/10.0)), 0, 100)},
+			dispatchCmd{param: paramHPReverbDampen, val1: clampInt(int(math.Round(state.Reverb.Damping)), 0, 100)},
+			dispatchCmd{param: paramHPReverbWet, val1: wet},
+			dispatchCmd{param: paramHPReverbDry, val1: 100 - wet},
+			dispatchCmd{param: paramHPReverbWidth, val1: 100},
+		)
+	}
+
+	convolverEnabled := state.Convolver.On && strings.TrimSpace(state.Convolver.KernelPath) != ""
+	cmds = append(cmds, dispatchCmd{param: paramHPConvolverEnable, val1: boolInt(convolverEnabled)})
+	cmds = append(cmds, dispatchCmd{
+		param: paramHPConvolverCrossChan,
+		val1:  centi(clamp(state.Convolver.CrossChannel, 0.0, 1.0)),
+	})
+	if convolverEnabled {
+		payload := serializeCString(state.Convolver.KernelPath)
+		cmds = append(cmds, dispatchCmd{
+			param:        paramHPConvolverSetKernel,
+			arrSize:      len(payload),
+			payload:      payload,
+			onlyOnChange: "convolver_kernel",
+		})
+	}
+
+	ddcPayload, ddcSize := serializeDDCPayload(state.DDC)
+	ddcEnabled := state.DDC.On && ddcSize > 0
+	cmds = append(cmds, dispatchCmd{param: paramHPDDCEnable, val1: boolInt(ddcEnabled)})
+	if ddcEnabled {
+		cmds = append(cmds, dispatchCmd{
+			param:        paramHPDDCCoefficients,
+			arrSize:      ddcSize,
+			payload:      ddcPayload,
+			onlyOnChange: "ddc_coeffs",
+		})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPAGCEnable, val1: boolInt(state.AGC.On)})
+	if state.AGC.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPAGCRatio, val1: centi(state.AGC.Ratio)},
+			dispatchCmd{param: paramHPAGCVolume, val1: centi(state.AGC.Volume)},
+			dispatchCmd{param: paramHPAGCMaxScaler, val1: centi(state.AGC.MaxScaler)},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPDynamicSystemEnable, val1: boolInt(state.DynamicSystem.On)})
+	if state.DynamicSystem.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPDynamicSystemXCoeffs, val1: state.DynamicSystem.XCoeffsLow, val2: state.DynamicSystem.XCoeffsHigh},
+			dispatchCmd{param: paramHPDynamicSystemYCoeffs, val1: state.DynamicSystem.YCoeffsLow, val2: state.DynamicSystem.YCoeffsHigh},
+			dispatchCmd{param: paramHPDynamicSystemSide, val1: centi(state.DynamicSystem.SideGainX), val2: centi(state.DynamicSystem.SideGainY)},
+			dispatchCmd{param: paramHPDynamicSystemPower, val1: centi(state.DynamicSystem.Strength)},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPSpectrumEnable, val1: boolInt(state.SpectrumExtension.On)})
+	if state.SpectrumExtension.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPSpectrumBark, val1: state.SpectrumExtension.ReferenceFrequency},
+			dispatchCmd{param: paramHPSpectrumExciter, val1: centi(state.SpectrumExtension.Exciter)},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPFieldEnable, val1: boolInt(state.FieldSurround.On)})
+	if state.FieldSurround.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPFieldWidening, val1: centi(state.FieldSurround.Widening)},
+			dispatchCmd{param: paramHPFieldMidImage, val1: centi(state.FieldSurround.MidImage)},
+			dispatchCmd{param: paramHPFieldDepth, val1: state.FieldSurround.Depth},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPDiffEnable, val1: boolInt(state.DiffSurround.On)})
+	if state.DiffSurround.On {
+		cmds = append(cmds, dispatchCmd{param: paramHPDiffDelay, val1: centi(state.DiffSurround.Delay)})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPCureEnable, val1: boolInt(state.Cure.On)})
+	if state.Cure.On {
+		cmds = append(cmds, dispatchCmd{
+			param: paramHPCureStrength,
+			val1:  clampInt(state.Cure.StrengthPreset, 0, 2),
+		})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPTubeEnable, val1: boolInt(state.TubeSimulator.On)})
+	cmds = append(cmds, dispatchCmd{param: paramHPAnalogXEnable, val1: boolInt(state.AnalogX.On)})
+	if state.AnalogX.On {
+		cmds = append(cmds, dispatchCmd{param: paramHPAnalogXMode, val1: state.AnalogX.Mode})
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPFETEnable, val1: boolCenti(state.FETCompressor.On)})
+	if state.FETCompressor.On {
+		cmds = append(cmds,
+			dispatchCmd{param: paramHPFETThreshold, val1: centi(state.FETCompressor.Threshold)},
+			dispatchCmd{param: paramHPFETRatio, val1: centi(state.FETCompressor.Ratio)},
+			dispatchCmd{param: paramHPFETKnee, val1: centi(state.FETCompressor.Knee)},
+			dispatchCmd{param: paramHPFETAutoKnee, val1: boolCenti(state.FETCompressor.AutoKnee)},
+			dispatchCmd{param: paramHPFETGain, val1: centi(state.FETCompressor.Gain)},
+			dispatchCmd{param: paramHPFETAutoGain, val1: boolCenti(state.FETCompressor.AutoGain)},
+			dispatchCmd{param: paramHPFETAttack, val1: centi(state.FETCompressor.Attack)},
+			dispatchCmd{param: paramHPFETAutoAttack, val1: boolCenti(state.FETCompressor.AutoAttack)},
+			dispatchCmd{param: paramHPFETRelease, val1: centi(state.FETCompressor.Release)},
+			dispatchCmd{param: paramHPFETAutoRelease, val1: boolCenti(state.FETCompressor.AutoRelease)},
+			dispatchCmd{param: paramHPFETKneeMulti, val1: centi(state.FETCompressor.KneeMulti)},
+			dispatchCmd{param: paramHPFETMaxAttack, val1: centi(state.FETCompressor.MaxAttack)},
+			dispatchCmd{param: paramHPFETMaxRelease, val1: centi(state.FETCompressor.MaxRelease)},
+			dispatchCmd{param: paramHPFETCrest, val1: centi(state.FETCompressor.Crest)},
+			dispatchCmd{param: paramHPFETAdapt, val1: centi(state.FETCompressor.Adapt)},
+			dispatchCmd{param: paramHPFETNoClip, val1: boolCenti(state.FETCompressor.NoClip)},
+		)
+	}
+
+	cmds = append(cmds, dispatchCmd{param: paramHPSpeakerCorrection, val1: boolInt(state.SpeakerCorrection.On)})
+	return cmds
+}
+
+func fillParamBuf(buf *paramBuf, state DSPState) {
+	*buf = paramBuf{}
+
+	if state.Master.Power {
+		buf[idxEnabled] = 1
+	}
+	buf[idxPreVol] = float32(state.Master.PreVol)
+	buf[idxPostVol] = float32(state.Master.PostVol)
+
+	if state.EqOn {
+		buf[idxEQEnabled] = 1
+	}
+	for i := 0; i < len(state.Equalizer) && i < 18; i++ {
+		buf[idxEQBands+i] = float32(state.Equalizer[i])
+	}
+
+	if state.XBass.On {
+		buf[idxXBassEnabled] = 1
+		buf[idxXBassMode] = float32(parseBassMode(state.XBass.Mode))
+		buf[idxXBassSpkSize] = float32(state.XBass.SpeakerSize)
+		buf[idxXBassGain] = float32(state.XBass.Level)
+	}
+
+	if state.XClarity.On {
+		buf[idxXClarEnabled] = 1
+		buf[idxXClarMode] = float32(parseClarityMode(state.XClarity.Mode))
+		buf[idxXClarGain] = float32(state.XClarity.Level)
+	}
+
+	if state.Surround3D.On {
+		buf[idxSurrEnabled] = 1
+		buf[idxSurrSize] = float32(state.Surround3D.SpaceSize)
+	}
+
+	if state.Reverb.On {
+		buf[idxRevEnabled] = 1
+		buf[idxRevRoom] = float32(state.Reverb.RoomSize)
+		buf[idxRevDamp] = float32(state.Reverb.Damping)
+		buf[idxRevMix] = float32(state.Reverb.WetMix)
+	}
+
+	if state.Convolver.On {
+		buf[idxConvolverEnabled] = 1
+	}
+
+	if state.Cure.On {
+		buf[idxCureEnabled] = 1
+		buf[idxCureStrength] = float32(clampInt(state.Cure.StrengthPreset, 0, 2))
+	}
+
+	if state.AnalogX.On {
+		buf[idxAnalogXEnabled] = 1
+		buf[idxAnalogXMode] = float32(state.AnalogX.Mode)
+	}
+
+	if state.SpeakerCorrection.On {
+		buf[idxSpeakerCorrectionEnabled] = 1
+	}
+
+	if state.Output.Limiter < 1.0 {
+		buf[idxLimiterEnabled] = 1
+		buf[idxLimiterValue] = float32(clamp(state.Output.Limiter, 0.0, 1.0))
+	}
+}
+
+func (dm *DSPManager) inactiveBuffer() *paramBuf {
+	if dm.activeBuf == 0 {
+		return &dm.backBuf
+	}
+	return &dm.frontBuf
+}
+
+func (dm *DSPManager) writeSharedMemory(buf *paramBuf) {
+	if !dm.shmReady || dm.memView == 0 {
+		return
+	}
+
+	src := unsafe.Slice((*byte)(unsafe.Pointer(buf)), sharedMemBytes)
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(dm.memView)), sharedMemBytes)
+	copy(dst, src)
+
+	if dm.eventHandle != 0 {
+		_ = windows.SetEvent(dm.eventHandle)
+	}
+}
+
+func (dm *DSPManager) shouldDispatchPayload(key string, arrSize int, payload []byte) bool {
+	if dm.payloads == nil {
+		dm.payloads = make(map[string]payloadCache)
+	}
+
+	prev, ok := dm.payloads[key]
+	if ok && prev.arrSize == arrSize && bytesEqual(prev.data, payload) {
+		return false
+	}
+
+	dm.payloads[key] = payloadCache{
+		arrSize: arrSize,
+		data:    append([]byte(nil), payload...),
+	}
+	return true
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func boolInt(b bool) int {
 	if b {
-		return 1.0
+		return 1
 	}
-	return 0.0
+	return 0
 }
 
-// parseBassMode converts string mode to numeric value
+func boolCenti(b bool) int {
+	if b {
+		return 100
+	}
+	return 0
+}
+
+func centi(v float64) int {
+	return int(math.Round(v * 100.0))
+}
+
+func dbLinearCenti(db float64) int {
+	linear := math.Pow(10.0, db/20.0)
+	return int(math.Round(linear * 100.0))
+}
+
 func parseBassMode(mode string) int {
 	switch mode {
 	case "Pure Bass":
 		return 1
-	default: // "Natural Bass"
+	default:
 		return 0
 	}
 }
 
-// parseClarityMode converts string mode to numeric value
 func parseClarityMode(mode string) int {
 	switch mode {
 	case "OZone+":
 		return 1
 	case "X-HiFi":
 		return 2
-	default: // "Natural"
+	default:
 		return 0
 	}
 }
 
-// memmove is a low-level memory copy function from the Go runtime
-// We link to it directly to ensure atomic behavior for our buffer swaps
-//
-//go:linkname memmove runtime.memmove
-func memmove(to, from unsafe.Pointer, n uintptr)
+func speakerHz(size int) int {
+	return speakerSizeToHz[clampInt(size, 0, len(speakerSizeToHz)-1)]
+}
+
+func serializeCString(value string) []byte {
+	return []byte(strings.TrimSpace(value))
+}
+
+func serializeDDCPayload(state DDCState) ([]byte, int) {
+	count44100 := (len(state.Coeffs44100) / 5) * 5
+	count48000 := (len(state.Coeffs48000) / 5) * 5
+	if count44100 == 0 || count48000 == 0 {
+		return nil, 0
+	}
+
+	count := count44100
+	if count48000 < count {
+		count = count48000
+	}
+
+	values := make([]float32, 0, count*2)
+	for i := 0; i < count; i++ {
+		values = append(values, float32(state.Coeffs44100[i]))
+	}
+	for i := 0; i < count; i++ {
+		values = append(values, float32(state.Coeffs48000[i]))
+	}
+
+	return serializeFloat32Payload(values), count
+}
+
+func serializeFloat32Payload(values []float32) []byte {
+	payload := make([]byte, 4*len(values))
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(payload[i*4:], math.Float32bits(value))
+	}
+	return payload
+}
