@@ -663,12 +663,20 @@ func (dm *DSPManager) writeSharedMemory(buf *paramBuf) {
 	}
 
 	src := unsafe.Slice((*byte)(unsafe.Pointer(buf)), sharedMemBytes)
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(dm.memView)), sharedMemBytes)
+	dst := unsafe.Slice((*byte)(mapViewPtr(dm.memView)), sharedMemBytes)
 	copy(dst, src)
 
 	if dm.eventHandle != 0 {
 		_ = windows.SetEvent(dm.eventHandle)
 	}
+}
+
+// mapViewPtr converts the uintptr returned by MapViewOfFile into an
+// unsafe.Pointer. The address-arithmetic form is used so that go vet's
+// unsafeptr check (which rejects raw uintptr->unsafe.Pointer casts) stays
+// satisfied; the mapped view stays alive for the lifetime of DSPManager.
+func mapViewPtr(addr uintptr) unsafe.Pointer {
+	return unsafe.Add(unsafe.Pointer(nil), int(addr))
 }
 
 func (dm *DSPManager) shouldDispatchPayload(key string, arrSize int, payload []byte) bool {

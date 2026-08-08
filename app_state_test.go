@@ -76,3 +76,45 @@ func TestDecodePresetStateMergesDefaultsAndSanitizes(t *testing.T) {
 		t.Fatalf("equalizer merge failed: %v", state.Equalizer[:3])
 	}
 }
+
+func TestPresetNameValidation(t *testing.T) {
+	valid := []string{
+		"Default", "My Preset 2", "drop-bass", "x_HiFi_44.1", "a.b", "name.json",
+		"a", "1234567890",
+	}
+	for _, name := range valid {
+		if !validPresetName(name) {
+			t.Fatalf("validPresetName(%q) = false, want true", name)
+		}
+	}
+
+	invalid := []string{
+		"", "..", "../evil", "a\\b", "a/b", "a:b", "a*b", "a?b",
+		"a\"b", "a<b", "a>b", "a|b", ".hidden",
+		".", " name", "-name", "_name",
+		"this-name-is-way-too-long-1234567890123456789012345678901234567890",
+	}
+	for _, name := range invalid {
+		if validPresetName(name) {
+			t.Fatalf("validPresetName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestCloneStateIsDeep(t *testing.T) {
+	state := defaultState()
+	state.Equalizer[3] = -4.5
+	state.DDC.Coeffs44100 = []float64{1, 2, 3, 4, 5}
+
+	clone := cloneState(state)
+
+	clone.Equalizer[3] = 9
+	clone.DDC.Coeffs44100[0] = 99
+
+	if state.Equalizer[3] != -4.5 {
+		t.Fatalf("clone leaked into source equalizer: %v", state.Equalizer[3])
+	}
+	if state.DDC.Coeffs44100[0] != 1 {
+		t.Fatalf("clone leaked into source ddc coeffs: %v", state.DDC.Coeffs44100[0])
+	}
+}

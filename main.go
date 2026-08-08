@@ -3,7 +3,6 @@ package main
 import (
 	"embed"
 	"fmt"
-	"strings"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2"
@@ -88,7 +87,7 @@ func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceDa
 	runtime.EventsEmit(a.ctx, "launchArgs", secondInstanceArgs)
 
 	// Opcional: imprimir en consola para debug
-	println("Segunda instancia bloqueada. Argumentos:", strings.Join(secondInstanceArgs, " "))
+	logV("second instance blocked, args: %v", secondInstanceArgs)
 }
 
 func main() {

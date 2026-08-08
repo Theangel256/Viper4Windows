@@ -1,6 +1,10 @@
 # build output
 dist/
 
+# wails build artifacts
+Viper4Windows.exe
+*.exe
+
 # generated types
 .astro/
 

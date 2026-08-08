@@ -7,14 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows/registry"
 )
-
-var lastUpdate time.Time
 
 type dllResolution struct {
 	path        string
@@ -362,9 +362,13 @@ func defaultState() DSPState {
 // bound to the JS runtime as window.go.main.App.<MethodName>().
 type App struct {
 	ctx   context.Context
+	mu    sync.Mutex
 	state DSPState
 	dsp   *DSPManager    // Maneja la memoria compartida (Hot Path)
 	drv   *DriverManager // Maneja el registro y servicios (Control Path)
+
+	lastEqUpdate time.Time
+	lastDSPToast time.Time
 }
 
 // NewApp creates a new App instance, initializing the default DSP state.
@@ -404,6 +408,8 @@ func (a *App) startup(ctx context.Context) {
 	// ── 3. Push initial state ────────────────────────────────────────────────
 	a.synchronize()
 
+	migratePresets()
+
 	logV("ready driver=%t direct=%t", a.CheckDriver(), directReady)
 }
 
@@ -414,9 +420,50 @@ func (a *App) shutdown(ctx context.Context) {
 	a.dsp.Close()
 }
 
-// synchronize envía el estado actual de Go al driver de Windows
+// synchronize aplica el estado actual de Go al motor de audio disponible
+// (directo DLL o memoria compartida) y reporta los errores como toast.
 func (a *App) synchronize() {
-	a.dsp.ApplyChanges(a.state)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.dsp.ApplyChanges(a.state); err != nil {
+		a.reportDSPError(err)
+	}
+}
+
+// setState actualiza el estado bajo el mutex y lo sincroniza con el DSP,
+// devolviendo una copia profunda del nuevo estado para la UI.
+func (a *App) setState(mutate func(*DSPState)) DSPState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	mutate(&a.state)
+	if err := a.dsp.ApplyChanges(a.state); err != nil {
+		a.reportDSPError(err)
+	}
+	return cloneState(a.state)
+}
+
+// reportDSPError registra el error y muestra un toast, como máximo una vez
+// cada 5 segundos, para no inundar la UI durante el arrastre de sliders.
+func (a *App) reportDSPError(err error) {
+	if err == nil {
+		return
+	}
+	logV("dsp apply failed: %v", err)
+	if time.Since(a.lastDSPToast) < 5*time.Second {
+		return
+	}
+	a.lastDSPToast = time.Now()
+	a.emitToast(fmt.Sprintf("DSP settings could not be applied: %v", err), "warning")
+}
+
+// cloneState devuelve una copia profunda del estado (los slices comparten
+// backing array, por lo que GetState no puede devolver el estado interno).
+func cloneState(s DSPState) DSPState {
+	c := s
+	c.Equalizer = append([]float64(nil), s.Equalizer...)
+	c.DDC.Coeffs44100 = append([]float64(nil), s.DDC.Coeffs44100...)
+	c.DDC.Coeffs48000 = append([]float64(nil), s.DDC.Coeffs48000...)
+	return c
 }
 
 // ── APO Driver Management ─────────────────────────────────────────────────────
@@ -535,21 +582,7 @@ func resolveViPERDSPDLL(appDir string) dllResolution {
 }
 
 func driverSearchPaths(appDir string) []string {
-	paths := []string{
-		filepath.Join(appDir, "ViPERDSP.dll"),
-	}
-
-	seen := make(map[string]struct{}, len(paths))
-	unique := make([]string, 0, len(paths))
-	for _, path := range paths {
-		cleaned := filepath.Clean(path)
-		if _, ok := seen[cleaned]; ok {
-			continue
-		}
-		seen[cleaned] = struct{}{}
-		unique = append(unique, cleaned)
-	}
-	return unique
+	return []string{filepath.Join(appDir, "ViPERDSP.dll")}
 }
 
 // FixDriver ha sido eliminada ya que su lógica se ha integrado en SetDriverStatus
@@ -598,231 +631,242 @@ func (a *App) GetDeviceStatus() (string, error) {
 
 // ── DSP State Methods ─────────────────────────────────────────────────────────
 
-// GetState returns the full DSP state to the frontend.
+// GetState returns a deep copy of the full DSP state to the frontend.
 func (a *App) GetState() DSPState {
-	return a.state
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cloneState(a.state)
 }
 
 // ResetState restores factory defaults.
 func (a *App) ResetState() DSPState {
-	a.state = defaultState()
-	a.synchronize()
-	return a.state
+	return a.setState(func(s *DSPState) { *s = defaultState() })
 }
 
 // SetMode switches between music / movie / freestyle.
 func (a *App) SetMode(mode string) {
-	a.state.Mode = mode
-	a.synchronize()
+	a.setState(func(s *DSPState) { s.Mode = mode })
 }
 
 // SetPower toggles the master power switch in the state.
 func (a *App) SetPower(on bool) {
-	a.state.Master.Power = on
-	a.synchronize()
+	a.setState(func(s *DSPState) { s.Master.Power = on })
 }
 
 // SetPreVolume sets the pre-DSP volume in dB (range −40..+12).
 func (a *App) SetPreVolume(db float64) {
-	a.state.Master.PreVol = clamp(db, MinPreVol, MaxPreVol)
-	a.synchronize()
+	a.setState(func(s *DSPState) {
+		s.Master.PreVol = clamp(db, MinPreVol, MaxPreVol)
+	})
 }
 
 // SetPostVolume sets the post-DSP volume in dB (range −40..+12).
 func (a *App) SetPostVolume(db float64) {
-	a.state.Master.PostVol = clamp(db, MinPostVol, MaxPostVol)
-	a.synchronize()
+	a.setState(func(s *DSPState) {
+		s.Master.PostVol = clamp(db, MinPostVol, MaxPostVol)
+	})
 }
 
 // SetXBass replaces the full XBass state.
 func (a *App) SetXBass(s XBassState) {
-	s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
-	s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
-	a.state.XBass = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
+		s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
+		state.XBass = s
+	})
 }
 
 // SetXClarity replaces the full XClarity state.
 func (a *App) SetXClarity(s XClarityState) {
-	s.Level = clamp(s.Level, MinXClarityLevel, MaxXClarityLevel)
-	a.state.XClarity = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Level = clamp(s.Level, MinXClarityLevel, MaxXClarityLevel)
+		state.XClarity = s
+	})
 }
 
 // SetSurround3D replaces the full 3D Surround state.
 func (a *App) SetSurround3D(s Surround3DState) {
-	s.SpaceSize = clampInt(s.SpaceSize, MinSpaceSize, MaxSpaceSize)
-	s.ImageSize = clampInt(s.ImageSize, MinImageSize, MaxImageSize)
-	a.state.Surround3D = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.SpaceSize = clampInt(s.SpaceSize, MinSpaceSize, MaxSpaceSize)
+		s.ImageSize = clampInt(s.ImageSize, MinImageSize, MaxImageSize)
+		state.Surround3D = s
+	})
 }
 
 // SetReverb replaces the full reverb parameter set.
 func (a *App) SetReverb(p ReverbParams) {
-	a.state.Reverb = p
-	a.synchronize()
+	a.setState(func(s *DSPState) { s.Reverb = p })
 }
 
 // SetReverbPanel updates the bottom reverb strip state.
 func (a *App) SetReverbPanel(p ReverbPanelState) {
-	a.state.ReverbPanel = p
-	a.synchronize()
+	a.setState(func(s *DSPState) { s.ReverbPanel = p })
 }
 
 func (a *App) SetOutput(s OutputState) {
-	s.Pan = clamp(s.Pan, -1.0, 1.0)
-	s.Limiter = clamp(s.Limiter, 0.0, 1.0)
-	a.state.Output = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Pan = clamp(s.Pan, -1.0, 1.0)
+		s.Limiter = clamp(s.Limiter, 0.0, 1.0)
+		state.Output = s
+	})
 }
 
 func (a *App) SetXBassMono(s XBassMonoState) {
-	s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
-	s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
-	a.state.XBassMono = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Level = clamp(s.Level, MinXBassLevel, MaxXBassLevel)
+		s.SpeakerSize = clampInt(s.SpeakerSize, MinSpeakerSize, MaxSpeakerSize)
+		state.XBassMono = s
+	})
 }
 
 func (a *App) SetConvolver(s ConvolverState) {
-	s.CrossChannel = clamp(s.CrossChannel, 0.0, 1.0)
-	a.state.Convolver = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.CrossChannel = clamp(s.CrossChannel, 0.0, 1.0)
+		state.Convolver = s
+	})
 }
 
 func (a *App) SetDDC(s DDCState) {
-	s.Coeffs44100 = sanitizeCoeffArray(s.Coeffs44100)
-	s.Coeffs48000 = sanitizeCoeffArray(s.Coeffs48000)
-	a.state.DDC = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Coeffs44100 = sanitizeCoeffArray(s.Coeffs44100)
+		s.Coeffs48000 = sanitizeCoeffArray(s.Coeffs48000)
+		state.DDC = s
+	})
 }
 
 func (a *App) SetAGC(s AGCState) {
-	s.Ratio = clamp(s.Ratio, 0.0, 20.0)
-	s.Volume = clamp(s.Volume, 0.0, 20.0)
-	s.MaxScaler = clamp(s.MaxScaler, 0.0, 20.0)
-	a.state.AGC = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Ratio = clamp(s.Ratio, 0.0, 20.0)
+		s.Volume = clamp(s.Volume, 0.0, 20.0)
+		s.MaxScaler = clamp(s.MaxScaler, 0.0, 20.0)
+		state.AGC = s
+	})
 }
 
 func (a *App) SetDynamicSystem(s DynamicSystemState) {
-	s.SideGainX = clamp(s.SideGainX, -20.0, 20.0)
-	s.SideGainY = clamp(s.SideGainY, -20.0, 20.0)
-	s.Strength = clamp(s.Strength, -20.0, 20.0)
-	a.state.DynamicSystem = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.SideGainX = clamp(s.SideGainX, -20.0, 20.0)
+		s.SideGainY = clamp(s.SideGainY, -20.0, 20.0)
+		s.Strength = clamp(s.Strength, -20.0, 20.0)
+		state.DynamicSystem = s
+	})
 }
 
 func (a *App) SetSpectrumExtension(s SpectrumExtensionState) {
-	s.ReferenceFrequency = clampInt(s.ReferenceFrequency, 0, 24000)
-	s.Exciter = clamp(s.Exciter, 0.0, 20.0)
-	a.state.SpectrumExtension = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.ReferenceFrequency = clampInt(s.ReferenceFrequency, 0, 24000)
+		s.Exciter = clamp(s.Exciter, 0.0, 20.0)
+		state.SpectrumExtension = s
+	})
 }
 
 func (a *App) SetFieldSurround(s FieldSurroundState) {
-	s.Widening = clamp(s.Widening, 0.0, 1.0)
-	s.MidImage = clamp(s.MidImage, 0.0, 1.0)
-	s.Depth = clampInt(s.Depth, 0, 100)
-	a.state.FieldSurround = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Widening = clamp(s.Widening, 0.0, 1.0)
+		s.MidImage = clamp(s.MidImage, 0.0, 1.0)
+		s.Depth = clampInt(s.Depth, 0, 100)
+		state.FieldSurround = s
+	})
 }
 
 func (a *App) SetDiffSurround(s DiffSurroundState) {
-	s.Delay = clamp(s.Delay, 0.0, 20.0)
-	a.state.DiffSurround = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Delay = clamp(s.Delay, 0.0, 20.0)
+		state.DiffSurround = s
+	})
 }
 
 func (a *App) SetCure(s CureState) {
-	s.StrengthPreset = clampInt(s.StrengthPreset, 0, 2)
-	a.state.Cure = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.StrengthPreset = clampInt(s.StrengthPreset, 0, 2)
+		state.Cure = s
+	})
 }
 
 func (a *App) SetTubeSimulator(s TubeSimulatorState) {
-	a.state.TubeSimulator = s
-	a.synchronize()
+	a.setState(func(state *DSPState) { state.TubeSimulator = s })
 }
 
 func (a *App) SetAnalogX(s AnalogXState) {
-	s.Mode = clampInt(s.Mode, 0, 8)
-	a.state.AnalogX = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Mode = clampInt(s.Mode, 0, 8)
+		state.AnalogX = s
+	})
 }
 
 func (a *App) SetFETCompressor(s FETCompressorState) {
-	s.Ratio = clamp(s.Ratio, 0.0, 20.0)
-	s.Knee = clamp(s.Knee, 0.0, 20.0)
-	s.Gain = clamp(s.Gain, -24.0, 24.0)
-	s.Attack = clamp(s.Attack, 0.0, 100.0)
-	s.Release = clamp(s.Release, 0.0, 100.0)
-	s.KneeMulti = clamp(s.KneeMulti, 0.0, 20.0)
-	s.MaxAttack = clamp(s.MaxAttack, 0.0, 100.0)
-	s.MaxRelease = clamp(s.MaxRelease, 0.0, 100.0)
-	s.Crest = clamp(s.Crest, 0.0, 20.0)
-	s.Adapt = clamp(s.Adapt, 0.0, 20.0)
-	a.state.FETCompressor = s
-	a.synchronize()
+	a.setState(func(state *DSPState) {
+		s.Ratio = clamp(s.Ratio, 0.0, 20.0)
+		s.Knee = clamp(s.Knee, 0.0, 20.0)
+		s.Gain = clamp(s.Gain, -24.0, 24.0)
+		s.Attack = clamp(s.Attack, 0.0, 100.0)
+		s.Release = clamp(s.Release, 0.0, 100.0)
+		s.KneeMulti = clamp(s.KneeMulti, 0.0, 20.0)
+		s.MaxAttack = clamp(s.MaxAttack, 0.0, 100.0)
+		s.MaxRelease = clamp(s.MaxRelease, 0.0, 100.0)
+		s.Crest = clamp(s.Crest, 0.0, 20.0)
+		s.Adapt = clamp(s.Adapt, 0.0, 20.0)
+		state.FETCompressor = s
+	})
 }
 
 func (a *App) SetSpeakerCorrection(s SpeakerCorrectionState) {
-	a.state.SpeakerCorrection = s
-	a.synchronize()
+	a.setState(func(state *DSPState) { state.SpeakerCorrection = s })
 }
 
 func (a *App) SetEqBand(index int, db float64) {
-	if index >= 0 && index < len(a.state.Equalizer) {
-		// 1. Actualizamos el estado "bonito" (el que entiende tu frontend y Go)
-		a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
+	a.mu.Lock()
+	if index < 0 || index >= len(a.state.Equalizer) {
+		a.mu.Unlock()
+		return
+	}
+	a.state.Equalizer[index] = clamp(db, MinEqBand, MaxEqBand)
 
-		// 2. Control de flujo (Throttle)
-		// Solo llamamos a la pesada maquinaria de sincronización cada 16ms
-		if time.Since(lastUpdate) > 16*time.Millisecond {
+	// Control de flujo (Throttle): la maquinaria de sincronización se invoca
+	// como máximo cada 16 ms, mientras que el estado siempre queda guardado.
+	shouldSync := time.Since(a.lastEqUpdate) >= 16*time.Millisecond
+	if shouldSync {
+		a.lastEqUpdate = time.Now()
+	}
+	a.mu.Unlock()
 
-			// Aquí es donde sucede la magia: ApplyChanges ahora debe internamente
-			// llamar a fillBuffer para convertir tu state en el array de 256
-			if err := a.dsp.ApplyChanges(a.state); err != nil {
-				logV("eq apply failed: %v", err)
-			}
-
-			lastUpdate = time.Now()
-		} else {
-			// Omitimos la actualización de memoria, pero el estado interno ya se guardó
-			// para la siguiente sincronización.
-			// fmt.Printf("⏳ Omitiendo señalización (Rate limit)\n")
-		}
+	if shouldSync {
+		a.synchronize()
 	}
 }
 
 // ResetEq pone todas las bandas a 0
 func (a *App) ResetEq() {
-	for i := range a.state.Equalizer {
-		a.state.Equalizer[i] = 0
-	}
-	a.synchronize()
+	a.setState(func(s *DSPState) {
+		for i := range s.Equalizer {
+			s.Equalizer[i] = 0
+		}
+	})
 }
 
 // SetFullEq sets all equalizer bands at once.
 func (a *App) SetFullEq(bands []float64) {
-	if len(bands) == len(a.state.Equalizer) {
-		for i, db := range bands {
-			a.state.Equalizer[i] = clamp(db, MinEqBand, MaxEqBand)
+	a.setState(func(s *DSPState) {
+		if len(bands) != len(s.Equalizer) {
+			return
 		}
-		a.synchronize()
-	}
+		for i, db := range bands {
+			s.Equalizer[i] = clamp(db, MinEqBand, MaxEqBand)
+		}
+	})
 }
 
 // CommitDSPChanges forces an explicit flush of the current state to the APO.
 // This is used as a fallback when a soft DLL commit is not available.
 func (a *App) CommitDSPChanges() error {
 	// Fast path: try to apply to shared memory
-	if err := a.dsp.ApplyChanges(a.state); err == nil {
+	if err := a.dsp.ApplyChanges(a.getStateCopy()); err == nil {
 		return nil
 	}
 
 	// Try to (re)initialize shared memory then apply again
 	if err := a.dsp.SyncSharedMemory(); err == nil {
-		if err := a.dsp.ApplyChanges(a.state); err == nil {
+		if err := a.dsp.ApplyChanges(a.getStateCopy()); err == nil {
 			return nil
 		}
 	}
@@ -835,7 +879,7 @@ func (a *App) CommitDSPChanges() error {
 
 		// After restart attempt to re-init shared memory and apply once more
 		if err := a.dsp.SyncSharedMemory(); err == nil {
-			_ = a.dsp.ApplyChanges(a.state)
+			_ = a.dsp.ApplyChanges(a.getStateCopy())
 		}
 		return nil
 	}
@@ -883,32 +927,85 @@ func (a *App) InstallAPOOnDefaultDevice() error {
 
 // ── Presets Management ────────────────────────────────────────────────────────
 
-// presetsDir returns the OS-specific presets directory, creating it if needed.
+// presetNameRe allows only safe filename characters: it must start with a
+// letter or digit (blocking ".", "..", ".hidden" and traversal), the rest may
+// contain letters, digits, spaces, dots, '-' and '_' (max 64 chars).
+var presetNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$`)
+
+func validPresetName(name string) bool {
+	return presetNameRe.MatchString(name)
+}
+
+// getPresetsDir returns the user data presets directory (%APPDATA%\Viper4Windows\presets),
+// creating it if needed. Read-only installs (Program Files) no longer break saving.
 func getPresetsDir() string {
-	// 1. Obtenemos la ruta completa del ejecutable (.exe)
+	if base := os.Getenv("APPDATA"); base != "" {
+		dir := filepath.Join(base, "Viper4Windows", "presets")
+		if err := os.MkdirAll(dir, 0755); err == nil {
+			return dir
+		} else {
+			logV("presets dir unavailable at %s: %v", dir, err)
+		}
+	}
+	return legacyPresetsDir()
+}
+
+// legacyPresetsDir is the pre-0.2.x location (next to the executable).
+func legacyPresetsDir() string {
 	exePath, err := os.Executable()
 	if err != nil {
 		logV("preset dir fallback: %v", err)
-		return "presets" // Fallback a relativo si falla
+		return "presets"
 	}
+	return filepath.Join(filepath.Dir(exePath), "presets")
+}
 
-	// 2. Obtenemos solo el directorio (quitamos el nombre del archivo)
-	exeDir := filepath.Dir(exePath)
-
-	// 3. Creamos la ruta final uniendo el directorio con la carpeta 'presets'
-	finalPath := filepath.Join(exeDir, "presets")
-
-	// 4. Nos aseguramos de que la carpeta exista
-	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
-		_ = os.MkdirAll(finalPath, 0755)
+// migratePresets copies presets from the old executable-adjacent directory to
+// the AppData directory once, when the new directory has no presets yet.
+func migratePresets() {
+	dir := getPresetsDir()
+	legacy := legacyPresetsDir()
+	if filepath.Clean(dir) == filepath.Clean(legacy) {
+		return
 	}
-	return finalPath
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
+				return // already has presets
+			}
+		}
+	}
+	entries, err := os.ReadDir(legacy)
+	if err != nil {
+		return
+	}
+	migrated := 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(legacy, e.Name()))
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0644); err == nil {
+			migrated++
+		}
+	}
+	if migrated > 0 {
+		logV("migrated %d preset(s) from %s to %s", migrated, legacy, dir)
+	}
 }
 
 // SavePreset persists the current DSP state to a named JSON file.
 func (a *App) SavePreset(name string) error {
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q: use letters, digits, spaces, '-' or '_' (max 64 chars)", name)
+	}
+
 	dir := getPresetsDir()
-	data, err := json.MarshalIndent(a.state, "", "  ")
+	data, err := json.MarshalIndent(a.getStateCopy(), "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
@@ -918,18 +1015,29 @@ func (a *App) SavePreset(name string) error {
 
 // LoadPreset reads a preset by name and returns the full DSP state.
 func (a *App) LoadPreset(name string) (DSPState, error) {
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return a.getStateCopy(), fmt.Errorf("invalid preset name %q", name)
+	}
+
 	dir := getPresetsDir()
 	data, err := os.ReadFile(filepath.Join(dir, name+".json"))
 	if err != nil {
-		return a.state, fmt.Errorf("read preset: %w", err)
+		return a.getStateCopy(), fmt.Errorf("read preset: %w", err)
 	}
 	s, err := decodePresetState(data)
 	if err != nil {
-		return a.state, fmt.Errorf("unmarshal: %w", err)
+		return a.getStateCopy(), fmt.Errorf("unmarshal: %w", err)
 	}
-	a.state = s
-	a.synchronize()
-	return a.state, nil
+	a.setState(func(state *DSPState) { *state = s })
+	return cloneState(a.state), nil
+}
+
+// getStateCopy returns a deep copy of the current state.
+func (a *App) getStateCopy() DSPState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cloneState(a.state)
 }
 
 // ListPresets returns the names of all saved presets.
@@ -941,11 +1049,30 @@ func (a *App) ListPresets() ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
-			names = append(names, e.Name()[:len(e.Name())-5])
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".json")
+		if validPresetName(base) {
+			names = append(names, base)
 		}
 	}
 	return names, nil
+}
+
+// DeletePreset removes a saved preset by name.
+func (a *App) DeletePreset(name string) error {
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q", name)
+	}
+	dir := getPresetsDir()
+	path := filepath.Join(dir, name+".json")
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("delete preset: %w", err)
+	}
+	logV("preset deleted: %s", name)
+	return nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
