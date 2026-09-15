@@ -21,7 +21,9 @@ type AudioDevice struct {
 	State   int    `json:"state"`
 	Default bool   `json:"default"`
 }
-
+type EndpointRequest struct {
+    EndpointID string `json:"endpoint_id"`
+}
 const (
 	// APO Class ID y Interface ID (exactos del ViPERDSP)
 	ViPER_CLSID = "{DA2FB532-3014-4B93-AD05-21B2C620F9C2}"
@@ -144,6 +146,7 @@ func (dm *DriverManager) GetDefaultEndpoint() (string, error) {
 	return "", fmt.Errorf("no audio endpoint found")
 }
 func (dm *DriverManager) AttachToDefaultEndpoint() error {
+	
 	if err := dm.RequireAdmin(); err != nil {
 		return err
 	}
