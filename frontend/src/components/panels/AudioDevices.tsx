@@ -4,7 +4,7 @@ import {
   InstallAPOOnDevice,
   UninstallAPOFromDevice,
   InstallAPOOnAllRender,
-} from "../../wailsjs/go/main/App";
+} from "../../wailsjs/go/app/App";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

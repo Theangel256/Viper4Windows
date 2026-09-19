@@ -2,97 +2,31 @@ package main
 
 import (
 	"embed"
-	"fmt"
-	"strings"
-	"unsafe"
+	"os"
+	"path/filepath"
+
+	"viper4windows/internal/app"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 
 	windowsOpts "github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
+// go:embed can only reach files at or below this file's own directory —
+// it cannot traverse "../..' — which is why a local frontend/dist
+// placeholder lives next to main.go instead of this embedding the
+// top-level frontend/dist directly. Your frontend build step needs to
+// copy/sync its output here (or into wherever wails.json's outputs
+// actually land) before `go build` runs.
+//
 //go:embed all:frontend/dist
 var assets embed.FS
 
-type TOKEN_ELEVATION struct {
-	TokenIsElevated uint32
-}
-
-// IsElevated checks if the process has administrative privileges
-func (dm *DriverManager) IsElevated() bool {
-	// Method 1: Token elevation (primary)
-	var token windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err == nil {
-		defer token.Close()
-
-		var elevation TOKEN_ELEVATION
-		var returnedLen uint32
-		err = windows.GetTokenInformation(
-			token,
-			windows.TokenElevation,
-			(*byte)(unsafe.Pointer(&elevation)),
-			uint32(unsafe.Sizeof(elevation)),
-			&returnedLen,
-		)
-		if err == nil {
-			return elevation.TokenIsElevated != 0
-		}
-	}
-
-	// Method 2: Fallback — try opening a protected registry key
-	// If we can write to HKLM, we're elevated
-	k, err := registry.OpenKey(
-		registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
-		registry.SET_VALUE,
-	)
-	if err == nil {
-		k.Close()
-		return true
-	}
-
-	return false
-}
-
-// RequireAdmin validates administrative privileges before operations
-func (dm *DriverManager) RequireAdmin() error {
-	if !dm.IsElevated() {
-		return fmt.Errorf("ACCESS_DENIED: Administrator privileges required.\nRight-click the application and select 'Run as Administrator'")
-	}
-	return nil
-}
-
-// GetAudioDevices (método de App - mantenido para Wails)
-func (a *App) GetAudioDevices() ([]AudioDevice, error) {
-	render, _ := enumerateDevices("render")
-	capture, _ := enumerateDevices("capture")
-	return append(render, capture...), nil
-}
-
-func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
-	// Notificamos al frontend los argumentos si es necesario
-	secondInstanceArgs := secondInstanceData.Args
-
-	// 1. Restaurar si está minimizada
-	runtime.WindowUnminimise(a.ctx)
-
-	// 2. Mostrar la ventana
-	runtime.WindowShow(a.ctx)
-
-	// 3. Forzar el foco para que la ventana existente sea la protagonista
-	runtime.EventsEmit(a.ctx, "launchArgs", secondInstanceArgs)
-
-	// Opcional: imprimir en consola para debug
-	println("Segunda instancia bloqueada. Argumentos:", strings.Join(secondInstanceArgs, " "))
-}
-
 func main() {
-	app := NewApp()
+	presetsDir := resolvePresetsDir()
+	viperApp := app.NewApp(presetsDir)
 
 	err := wails.Run(&options.App{
 		Title:         "Viper4Windows — Audio DSP",
@@ -103,16 +37,20 @@ func main() {
 		DisableResize: false,
 		Frameless:     false,
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "67730e9c-0e89-47ef-8360-57ecd90aa1c2", // Usa un string único
-			OnSecondInstanceLaunch: app.onSecondInstanceLaunch,             // Tu función
+			UniqueId:               "67730e9c-0e89-47ef-8360-57ecd90aa1c2",
+			OnSecondInstanceLaunch: viperApp.OnSecondInstanceLaunch,
 		},
 		BackgroundColour: &options.RGBA{R: 244, G: 244, B: 245, A: 255}, // zinc-100
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup: app.startup,
+		OnStartup: viperApp.Startup,
+		// The old main.go never wired OnShutdown at all, even though
+		// App.Shutdown() exists and does real cleanup (closes shared
+		// memory) — Wails was just never told to call it.
+		OnShutdown: viperApp.Shutdown,
 		Bind: []interface{}{
-			app,
+			viperApp,
 		},
 		Windows: &windowsOpts.Options{
 			WebviewIsTransparent: false,
@@ -123,4 +61,14 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+}
+
+// resolvePresetsDir mirrors the pre-refactor app's convention
+// (filepath.Join(exeDir, "presets")) rather than inventing a new one.
+func resolvePresetsDir() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "presets"
+	}
+	return filepath.Join(filepath.Dir(exePath), "presets")
 }
