@@ -14,13 +14,6 @@ import (
 	windowsOpts "github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
-// go:embed can only reach files at or below this file's own directory —
-// it cannot traverse "../..' — which is why a local frontend/dist
-// placeholder lives next to main.go instead of this embedding the
-// top-level frontend/dist directly. Your frontend build step needs to
-// copy/sync its output here (or into wherever wails.json's outputs
-// actually land) before `go build` runs.
-//
 //go:embed all:frontend/dist
 var assets embed.FS
 

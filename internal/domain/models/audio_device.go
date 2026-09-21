@@ -14,6 +14,7 @@ type AudioDevice struct {
 	IconPath    string `json:"iconPath"`    // System icon path
 	Description string `json:"description"` // Full device description
 	State       int    `json:"state"`       // Device state (1=active, etc.)
+	HasAPO      bool   `json:"hasAPO"`      // Whether the ViPER APO is currently attached
 }
 
 // DeviceRole represents the type of audio endpoint

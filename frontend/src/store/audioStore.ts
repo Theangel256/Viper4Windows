@@ -2,64 +2,41 @@
  * audioStore.ts
  *
  * Central Zustand store for all DSP state.
- * Each setter mirrors a Go method exposed via Wails:
- *   window.go.main.App.<MethodName>(payload)
  *
- * Pattern:
- *   1. Optimistic local update
- *   2. Fire-and-forget Go call
- *   3. On error: rollback
+ * FIX (this pass): every action in this store used to call
+ * `window.go.main.App.<Method>` — a hand-typed, invented API surface
+ * (SetPreVolume, SetReverb, SetAGC, CommitDSPChangesAsync, CheckDriver,
+ * ...) that never matched the real Go bindings. Two separate bugs:
+ *
+ *   1. Wrong namespace: the real App lives at `window.go.app.App`
+ *      (Go package `app`), not `window.go.main.App`.
+ *   2. Most of those methods were never implemented on the Go side at
+ *      all — only Master (power/preVol/postVol), EQ, XBass, XClarity,
+ *      and Surround3D have real per-field Set* methods today.
+ *
+ * Every call here now goes through the generated bindings in
+ * ../wailsjs/go/app/App (typed, always in sync with the real Go
+ * struct — regenerated on every `wails dev`/`wails build`) instead of
+ * a hand-maintained global `window.go` interface that could silently
+ * drift from reality again.
+ *
+ * Modules with no backend Set* method yet (reverb, reverbPanel,
+ * convolver, ddc, agc, dynamicSystem, spectrumExtension,
+ * fieldSurround, diffSurround, cure, tubeSimulator, analogX,
+ * fetCompressor, speakerCorrection, output, xBassMono, mode) still
+ * update local UI state so their panels stay interactive/previewable,
+ * but deliberately do NOT call Go — there is nothing real to call.
+ * GetState()/LoadPreset() DO hydrate these from the backend correctly
+ * (DSPState carries all of them), so opening a saved preset shows the
+ * right values; changing a slider just won't persist until each one
+ * gets a real Set* method on App (see RESTRUCTURE_NOTES.md). Search
+ * for "LOCAL-ONLY" below to find exactly which ones.
  */
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
+import * as Go from "../wailsjs/go/app/App";
 
-declare global {
-  interface Window {
-    go: {
-      main: {
-        App: {
-          GetState(): Promise<DSPState>;
-          ResetState(): Promise<DSPState>;
-          CheckDriver(): Promise<boolean>;
-          SetDriverStatus(status: boolean): Promise<boolean>;
-          SetMode(mode: string): Promise<void>;
-          SetEqBand(index: number, db: number): Promise<void>;
-          SetFullEq(bands: number[]): Promise<void>;
-          ResetEq(): Promise<void>;
-          SetPower(on: boolean): Promise<void>;
-          SetPreVolume(db: number): Promise<void>;
-          SetPostVolume(db: number): Promise<void>;
-          SetXBass(s: XBassState): Promise<void>;
-          SetXBassMono(s: XBassMonoState): Promise<void>;
-          SetXClarity(s: XClarityState): Promise<void>;
-          SetSurround3D(s: Surround3DState): Promise<void>;
-          SetReverb(p: ReverbParams): Promise<void>;
-          SetReverbPanel(p: ReverbPanelState): Promise<void>;
-          SetOutput(s: OutputState): Promise<void>;
-          SetConvolver(s: ConvolverState): Promise<void>;
-          SetDDC(s: DDCState): Promise<void>;
-          SetAGC(s: AGCState): Promise<void>;
-          SetDynamicSystem(s: DynamicSystemState): Promise<void>;
-          SetSpectrumExtension(s: SpectrumExtensionState): Promise<void>;
-          SetFieldSurround(s: FieldSurroundState): Promise<void>;
-          SetDiffSurround(s: DiffSurroundState): Promise<void>;
-          SetCure(s: CureState): Promise<void>;
-          SetTubeSimulator(s: TubeSimulatorState): Promise<void>;
-          SetAnalogX(s: AnalogXState): Promise<void>;
-          SetFETCompressor(s: FETCompressorState): Promise<void>;
-          SetSpeakerCorrection(s: SpeakerCorrectionState): Promise<void>;
-          CommitDSPChanges(): Promise<void>;
-          CommitDSPChangesAsync(): Promise<void>;
-          SavePreset(name: string): Promise<void>;
-          LoadPreset(name: string): Promise<DSPState>;
-          ListPresets(): Promise<string[]>;
-        };
-      };
-    };
-  }
-}
-
-async function go<T>(fn: () => Promise<T>, onError?: () => void): Promise<T | null> {
+async function call<T>(fn: () => Promise<T>, onError?: () => void): Promise<T | null> {
   try {
     return await fn();
   } catch (e) {
@@ -67,17 +44,6 @@ async function go<T>(fn: () => Promise<T>, onError?: () => void): Promise<T | nu
     if (onError) onError();
     return null;
   }
-}
-
-let commitTimer: number | undefined;
-
-function scheduleCommit() {
-  if (commitTimer) {
-    clearTimeout(commitTimer);
-  }
-  commitTimer = window.setTimeout(() => {
-    go(() => window.go.main.App.CommitDSPChangesAsync()).catch(() => {});
-  }, 150);
 }
 
 export interface MasterState {
@@ -273,35 +239,35 @@ const DEFAULT_STATE: DSPState = {
   reverbPanel: { on: false, roomSize: "Smallest Room", size: 40, wetMix: 50 },
   convolver: { on: false, kernelPath: "", crossChannel: 0 },
   ddc: { on: false, coeffs44100: [], coeffs48000: [] },
-  agc: { on: false, ratio: 1, volume: 1, maxScaler: 1 },
+  agc: { on: false, ratio: 2, volume: 0, maxScaler: 3 },
   dynamicSystem: {
     on: false,
-    xCoeffsLow: 120,
-    xCoeffsHigh: 120,
-    yCoeffsLow: 200,
-    yCoeffsHigh: 200,
-    sideGainX: 0,
-    sideGainY: 0,
-    strength: 0,
+    xCoeffsLow: 0,
+    xCoeffsHigh: 0,
+    yCoeffsLow: 0,
+    yCoeffsHigh: 0,
+    sideGainX: 1,
+    sideGainY: 1,
+    strength: 0.5,
   },
-  spectrumExtension: { on: false, referenceFrequency: 7600, exciter: 0 },
-  fieldSurround: { on: false, widening: 0, midImage: 0, depth: 0 },
-  diffSurround: { on: false, delay: 0 },
-  cure: { on: false, strengthPreset: 0 },
+  spectrumExtension: { on: false, referenceFrequency: 8000, exciter: 0.3 },
+  fieldSurround: { on: false, widening: 0.3, midImage: 0.3, depth: 20 },
+  diffSurround: { on: false, delay: 0.02 },
+  cure: { on: false, strengthPreset: 1 },
   tubeSimulator: { on: false },
   analogX: { on: false, mode: 0 },
   fetCompressor: {
     on: false,
-    threshold: 0,
-    ratio: 1,
-    knee: 0,
-    autoKnee: false,
+    threshold: -20,
+    ratio: 4,
+    knee: 2,
+    autoKnee: true,
     gain: 0,
-    autoGain: false,
-    attack: 0,
-    autoAttack: false,
-    release: 0,
-    autoRelease: false,
+    autoGain: true,
+    attack: 5,
+    autoAttack: true,
+    release: 100,
+    autoRelease: true,
     kneeMulti: 1,
     maxAttack: 0,
     maxRelease: 0,
@@ -316,23 +282,33 @@ interface AudioStore extends DSPState {
   ready: boolean;
   presets: string[];
   isDriverInstalled: boolean;
+  isElevated: boolean;
+
   init(): Promise<void>;
-  checkDriverStatus(): Promise<void>;
-  setDriverStatus(status: boolean): void;
+  refreshAPOStatus(): Promise<void>;
+
   setPower(on: boolean): void;
   setPreVol(db: number): void;
   setPostVol(db: number): void;
-  setMode(mode: DSPState["mode"]): void;
+
+  setEqEnabled(on: boolean): void;
   setEqBand(index: number, db: number): void;
   setFullEq(bands: number[]): void;
   resetEq(): void;
+
   setXBass(patch: Partial<XBassState>): void;
-  setXBassMono(patch: Partial<XBassMonoState>): void;
   setXClarity(patch: Partial<XClarityState>): void;
   setSurround3D(patch: Partial<Surround3DState>): void;
+
+  // LOCAL-ONLY — no Go Set* method exists for these yet. See the file
+  // header comment. Kept as plain local setters (no `call()`, no
+  // optimistic rollback — there is nothing to roll back from) so
+  // these panels stay interactive without lying about being saved.
+  setMode(mode: DSPState["mode"]): void;
+  setOutput(patch: Partial<OutputState>): void;
+  setXBassMono(patch: Partial<XBassMonoState>): void;
   setReverb(patch: Partial<ReverbParams>): void;
   setReverbPanel(patch: Partial<ReverbPanelState>): void;
-  setOutput(patch: Partial<OutputState>): void;
   setConvolver(patch: Partial<ConvolverState>): void;
   setDDC(patch: Partial<DDCState>): void;
   setAGC(patch: Partial<AGCState>): void;
@@ -345,13 +321,16 @@ interface AudioStore extends DSPState {
   setAnalogX(patch: Partial<AnalogXState>): void;
   setFETCompressor(patch: Partial<FETCompressorState>): void;
   setSpeakerCorrection(patch: Partial<SpeakerCorrectionState>): void;
+
   savePreset(name: string): Promise<void>;
   loadPreset(name: string): Promise<void>;
+  deletePreset(name: string): Promise<void>;
   refreshPresets(): Promise<void>;
 }
 
 export const useAudioStore = create<AudioStore>()(
   subscribeWithSelector((set, get) => {
+    // Persisted patch: optimistic local update, call Go, roll back on error.
     const patchModule = <K extends keyof DSPState>(
       key: K,
       patch: Partial<DSPState[K]>,
@@ -360,10 +339,16 @@ export const useAudioStore = create<AudioStore>()(
       const prev = get()[key] as DSPState[K];
       const next = { ...(prev as object), ...(patch as object) } as DSPState[K];
       set({ [key]: next } as Pick<AudioStore, K>);
-      go(() => persist(next), () => {
+      call(() => persist(next), () => {
         set({ [key]: prev } as Pick<AudioStore, K>);
       });
-      scheduleCommit();
+    };
+
+    // LOCAL-ONLY patch: no Go call, nothing to roll back. See header.
+    const patchLocal = <K extends keyof DSPState>(key: K, patch: Partial<DSPState[K]>) => {
+      const prev = get()[key] as DSPState[K];
+      const next = { ...(prev as object), ...(patch as object) } as DSPState[K];
+      set({ [key]: next } as Pick<AudioStore, K>);
     };
 
     return {
@@ -371,70 +356,52 @@ export const useAudioStore = create<AudioStore>()(
       ready: false,
       presets: [],
       isDriverInstalled: false,
+      isElevated: false,
 
       async init() {
-        const [state, driverOk] = await Promise.all([
-          go(() => window.go.main.App.GetState()),
-          go(() => window.go.main.App.CheckDriver()),
+        const [state, apoStatus, elevated] = await Promise.all([
+          call(() => Go.GetState()),
+          call(() => Go.GetAPOStatus()),
+          call(() => Go.IsElevated()),
         ]);
         if (state) {
-          set({ ...state, isDriverInstalled: !!driverOk, ready: true });
-        } else {
-          set({ ready: true, isDriverInstalled: !!driverOk });
+          set({ ...(state as unknown as DSPState) });
         }
+        set({
+          ready: true,
+          isDriverInstalled: !!apoStatus?.isInstalled,
+          isElevated: !!elevated,
+        });
         get().refreshPresets();
       },
 
-      async checkDriverStatus() {
-        const installed = await window.go.main.App.CheckDriver();
-        set({ isDriverInstalled: installed });
-      },
-
-      setDriverStatus(status) {
-        const prev = get().isDriverInstalled;
-        set({ isDriverInstalled: status });
-        go(() => window.go.main.App.SetDriverStatus(status), () => {
-          set({ isDriverInstalled: prev });
-        });
+      async refreshAPOStatus() {
+        const status = await call(() => Go.GetAPOStatus());
+        set({ isDriverInstalled: !!status?.isInstalled });
       },
 
       setPower(on) {
         const prev = get().master;
-        const next = { ...prev, power: on };
-        set({ master: next });
-        go(() => window.go.main.App.SetPower(on), () => {
-          set({ master: prev });
-        });
-        scheduleCommit();
+        set({ master: { ...prev, power: on } });
+        call(() => Go.SetPower(on), () => set({ master: prev }));
       },
 
       setPreVol(db) {
         const prev = get().master;
-        const next = { ...prev, preVol: db };
-        set({ master: next });
-        go(() => window.go.main.App.SetPreVolume(db), () => {
-          set({ master: prev });
-        });
-        scheduleCommit();
+        set({ master: { ...prev, preVol: db } });
+        call(() => Go.SetPreVol(db), () => set({ master: prev }));
       },
 
       setPostVol(db) {
         const prev = get().master;
-        const next = { ...prev, postVol: db };
-        set({ master: next });
-        go(() => window.go.main.App.SetPostVolume(db), () => {
-          set({ master: prev });
-        });
-        scheduleCommit();
+        set({ master: { ...prev, postVol: db } });
+        call(() => Go.SetPostVol(db), () => set({ master: prev }));
       },
 
-      setMode(mode) {
-        const prev = get().mode;
-        set({ mode });
-        go(() => window.go.main.App.SetMode(mode), () => {
-          set({ mode: prev });
-        });
-        scheduleCommit();
+      setEqEnabled(on) {
+        const prev = get().eqOn;
+        set({ eqOn: on });
+        call(() => Go.SetEqEnabled(on), () => set({ eqOn: prev }));
       },
 
       setEqBand(index, db) {
@@ -442,135 +409,115 @@ export const useAudioStore = create<AudioStore>()(
         const nextEq = [...prevEq];
         nextEq[index] = db;
         set({ equalizer: nextEq });
-        go(() => window.go.main.App.SetEqBand(index, db), () => {
-          set({ equalizer: prevEq });
-        });
-        scheduleCommit();
+        call(() => Go.SetEqBand(index, db), () => set({ equalizer: prevEq }));
       },
 
       resetEq() {
-        const flatEq = Array(18).fill(0);
         const prevEq = get().equalizer;
+        const flatEq = Array(18).fill(0);
         set({ equalizer: flatEq });
-        go(() => window.go.main.App.ResetEq(), () => {
-          set({ equalizer: prevEq });
-        });
-        scheduleCommit();
+        call(() => Go.ResetEq(), () => set({ equalizer: prevEq }));
       },
 
       setFullEq(bands) {
         const prevEq = get().equalizer;
         set({ equalizer: bands });
-        go(() => window.go.main.App.SetFullEq(bands), () => {
-          set({ equalizer: prevEq });
-        });
-        scheduleCommit();
+        call(() => Go.SetFullEq(bands), () => set({ equalizer: prevEq }));
       },
 
       setXBass(patch) {
-        patchModule("xBass", patch, (next) => window.go.main.App.SetXBass(next as XBassState));
-      },
-
-      setXBassMono(patch) {
-        patchModule("xBassMono", patch, (next) => window.go.main.App.SetXBassMono(next as XBassMonoState));
+        patchModule("xBass", patch, (next) =>
+          Go.SetXBass(next.on, next.speakerSize, next.level, next.mode),
+        );
       },
 
       setXClarity(patch) {
-        patchModule("xClarity", patch, (next) => window.go.main.App.SetXClarity(next as XClarityState));
+        patchModule("xClarity", patch, (next) => Go.SetXClarity(next.on, next.level, next.mode));
       },
 
       setSurround3D(patch) {
-        patchModule("surround3D", patch, (next) => window.go.main.App.SetSurround3D(next as Surround3DState));
+        patchModule("surround3D", patch, (next) =>
+          Go.SetSurround3D(next.on, next.spaceSize, next.roomSize, next.imageSize),
+        );
       },
 
-      setReverb(patch) {
-        patchModule("reverb", patch, (next) => window.go.main.App.SetReverb(next as ReverbParams));
+      // ── LOCAL-ONLY (no backend Set* method yet) ──────────────────
+      setMode(mode) {
+        set({ mode });
       },
-
-      setReverbPanel(patch) {
-        patchModule("reverbPanel", patch, (next) => window.go.main.App.SetReverbPanel(next as ReverbPanelState));
-      },
-
       setOutput(patch) {
-        patchModule("output", patch, (next) => window.go.main.App.SetOutput(next as OutputState));
+        patchLocal("output", patch);
       },
-
+      setXBassMono(patch) {
+        patchLocal("xBassMono", patch);
+      },
+      setReverb(patch) {
+        patchLocal("reverb", patch);
+      },
+      setReverbPanel(patch) {
+        patchLocal("reverbPanel", patch);
+      },
       setConvolver(patch) {
-        patchModule("convolver", patch, (next) => window.go.main.App.SetConvolver(next as ConvolverState));
+        patchLocal("convolver", patch);
       },
-
       setDDC(patch) {
-        patchModule("ddc", patch, (next) => window.go.main.App.SetDDC(next as DDCState));
+        patchLocal("ddc", patch);
       },
-
       setAGC(patch) {
-        patchModule("agc", patch, (next) => window.go.main.App.SetAGC(next as AGCState));
+        patchLocal("agc", patch);
       },
-
       setDynamicSystem(patch) {
-        patchModule("dynamicSystem", patch, (next) => window.go.main.App.SetDynamicSystem(next as DynamicSystemState));
+        patchLocal("dynamicSystem", patch);
       },
-
       setSpectrumExtension(patch) {
-        patchModule("spectrumExtension", patch, (next) => window.go.main.App.SetSpectrumExtension(next as SpectrumExtensionState));
+        patchLocal("spectrumExtension", patch);
       },
-
       setFieldSurround(patch) {
-        patchModule("fieldSurround", patch, (next) => window.go.main.App.SetFieldSurround(next as FieldSurroundState));
+        patchLocal("fieldSurround", patch);
       },
-
       setDiffSurround(patch) {
-        patchModule("diffSurround", patch, (next) => window.go.main.App.SetDiffSurround(next as DiffSurroundState));
+        patchLocal("diffSurround", patch);
       },
-
       setCure(patch) {
-        patchModule("cure", patch, (next) => window.go.main.App.SetCure(next as CureState));
+        patchLocal("cure", patch);
       },
-
       setTubeSimulator(patch) {
-        patchModule("tubeSimulator", patch, (next) => window.go.main.App.SetTubeSimulator(next as TubeSimulatorState));
+        patchLocal("tubeSimulator", patch);
       },
-
       setAnalogX(patch) {
-        patchModule("analogX", patch, (next) => window.go.main.App.SetAnalogX(next as AnalogXState));
+        patchLocal("analogX", patch);
       },
-
       setFETCompressor(patch) {
-        patchModule("fetCompressor", patch, (next) => window.go.main.App.SetFETCompressor(next as FETCompressorState));
+        patchLocal("fetCompressor", patch);
       },
-
       setSpeakerCorrection(patch) {
-        patchModule("speakerCorrection", patch, (next) => window.go.main.App.SetSpeakerCorrection(next as SpeakerCorrectionState));
+        patchLocal("speakerCorrection", patch);
       },
 
+      // ── Presets ───────────────────────────────────────────────────
       async savePreset(name) {
-        await go(() => window.go.main.App.SavePreset(name));
+        await call(() => Go.SavePreset(name));
         get().refreshPresets();
       },
 
       async loadPreset(name) {
-        const state = await go(() => window.go.main.App.LoadPreset(name));
+        const state = await call(() => Go.LoadPreset(name));
         if (state) {
-          set({ ...state });
+          set({ ...(state as unknown as DSPState) });
         }
       },
 
+      async deletePreset(name) {
+        await call(() => Go.DeletePreset(name));
+        get().refreshPresets();
+      },
+
       async refreshPresets() {
-        const list = await go(() => window.go.main.App.ListPresets());
+        const list = await call(() => Go.ListPresets());
         if (list) {
           set({ presets: list });
         }
       },
     };
   }),
-);
-
-useAudioStore.subscribe(
-  (state) => state.isDriverInstalled,
-  (isInstalled) => {
-    if (!isInstalled) {
-      useAudioStore.getState().setPower(false);
-      console.error("CRITICAL: Driver de audio no detectado. Power OFF preventivo.");
-    }
-  },
 );

@@ -7,14 +7,23 @@ import {
 } from "../../wailsjs/go/app/App";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
+//
+// FIX (this pass): this used to declare its own `type`/`hasAPO` fields
+// that don't exist anywhere on the real Go response (models.AudioDevice
+// only has deviceType, no hasAPO at all). GetAudioDevices() genuinely
+// returned real devices the whole time — but `device.type` was always
+// undefined, so `devices.filter(d => d.type === tab)` always matched
+// zero rows. That's the entire "No output devices found" bug. `hasAPO`
+// is now a real field the Go side computes per device (device_service.go
+// calls IsAPOAttached for each one during enumeration).
 
 interface AudioDevice {
   id: string;
   name: string;
-  type: "render" | "capture";
+  deviceType: "render" | "capture";
   hasAPO: boolean;
   state: number; // 1=Active, 2=Disabled, 4=NotPresent, 8=Unplugged
-  default: boolean;
+  isDefault: boolean;
 }
 
 // DeviceState constants
@@ -83,7 +92,7 @@ export default function AudioDevices({ onClose, overlay = false }: AudioDevicesP
     setError(null);
     try {
       const result = await GetAudioDevices();
-      setDevices((result ?? []) as AudioDevice[]);
+      setDevices((result ?? []) as unknown as AudioDevice[]);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load devices");
     } finally {
@@ -107,10 +116,10 @@ export default function AudioDevices({ onClose, overlay = false }: AudioDevicesP
     setError(null);
     try {
       if (device.hasAPO) {
-        await UninstallAPOFromDevice(device.id, device.type);
+        await UninstallAPOFromDevice(device.id);
         showToast(`Driver removed from "${device.name}"`);
       } else {
-        await InstallAPOOnDevice(device.id, device.type);
+        await InstallAPOOnDevice(device.id);
         showToast(`Driver installed on "${device.name}"`);
       }
       await fetchDevices();
@@ -137,7 +146,7 @@ export default function AudioDevices({ onClose, overlay = false }: AudioDevicesP
 
   // ── Derived data ─────────────────────────────────────────────────────────────
 
-  const filtered = devices.filter((d) => d.type === tab);
+  const filtered = devices.filter((d) => d.deviceType === tab);
   const activeCount = filtered.filter((d) => d.state === STATE_ACTIVE).length;
   const apoCount = filtered.filter((d) => d.hasAPO).length;
 
@@ -278,7 +287,7 @@ export default function AudioDevices({ onClose, overlay = false }: AudioDevicesP
 
                 {/* Device icon */}
                 <div className="device-icon-wrap">
-                  <DeviceIcon type={device.type} />
+                  <DeviceIcon type={device.deviceType} />
                 </div>
 
                 {/* Device info */}

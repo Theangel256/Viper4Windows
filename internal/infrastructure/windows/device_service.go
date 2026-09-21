@@ -67,6 +67,7 @@ func (s *DeviceService) EnumerateDevices(role models.DeviceRole) ([]models.Audio
 			s.logger.Debug("skip device", "guid", guid, "error", err)
 			continue
 		}
+		dev.HasAPO = s.IsAPOAttached(guid)
 		devices = append(devices, dev)
 	}
 

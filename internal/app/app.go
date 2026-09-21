@@ -35,6 +35,7 @@ type App struct {
 	paramService  ports.DSPParameterPort
 	presetManager ports.PresetRepository
 	security      ports.SecurityPort
+	devices       ports.DeviceManagementPort
 
 	// Application state
 	state      models.DSPState
@@ -64,6 +65,10 @@ func NewApp(presetsDir string) *App {
 	// still needs to reflect after that move).
 	sharedMemSvc := windows.NewSharedMemoryService(logger, securitySvc, paramSvc)
 	presetMgr := services.NewPresetManagerService(logger, paramSvc, presetsDir)
+	// DeviceService is what frontend/src/components/panels/AudioDevices.tsx
+	// needs (GetAudioDevices/InstallAPOOnDevice/etc. below) — it existed as
+	// infrastructure already, it just wasn't wired into App yet.
+	deviceSvc := windows.NewDeviceService(logger, securitySvc)
 
 	return &App{
 		logger:        logger,
@@ -71,6 +76,7 @@ func NewApp(presetsDir string) *App {
 		paramService:  paramSvc,
 		presetManager: presetMgr,
 		security:      securitySvc,
+		devices:       deviceSvc,
 		state:         models.NewDefaultState(),
 		updateRate:    16 * time.Millisecond, // 60Hz max update rate
 	}
@@ -320,6 +326,58 @@ func (a *App) GetAPOStatus() models.APOStatus {
 		IsAttached:  a.sharedMem.IsConnected(),
 		Version:     "1.0.0", // Would read from shared memory
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Device / APO Management (Wails-exposed methods)
+// ─────────────────────────────────────────────────────────────────────────────
+// These four match src/components/panels/AudioDevices.tsx's imports
+// exactly (GetAudioDevices, InstallAPOOnDevice, UninstallAPOFromDevice,
+// InstallAPOOnAllRender) — DeviceService already implemented the real
+// work (device_service.go), it just wasn't reachable from App/the
+// frontend bindings yet. After adding these, regenerate the JS
+// bindings (`wails generate module`, or just run `wails dev` — it
+// regenerates them on startup) so
+// src/wailsjs/go/app/App.js picks up the new exports.
+
+// GetAudioDevices lists playback (render) endpoints, matching the
+// pre-refactor app's enumerateDevices("render") scope.
+func (a *App) GetAudioDevices() ([]models.AudioDevice, error) {
+	return a.devices.EnumerateDevices(models.DeviceRoleRender)
+}
+
+// InstallAPOOnDevice attaches the ViPER APO to one device by ID.
+func (a *App) InstallAPOOnDevice(deviceID string) error {
+	return a.devices.AttachAPO(deviceID)
+}
+
+// UninstallAPOFromDevice detaches the ViPER APO from one device by ID,
+// restoring whatever FxProperties chain was there before (see
+// device_service.go's AttachAPO/DetachAPO + apo_chain_backup.go).
+func (a *App) UninstallAPOFromDevice(deviceID string) error {
+	return a.devices.DetachAPO(deviceID)
+}
+
+// InstallAPOOnAllRender attaches the APO to every playback device.
+// Keeps going on a per-device failure so one bad endpoint doesn't
+// block the rest, and reports every failure it hit at the end.
+func (a *App) InstallAPOOnAllRender() error {
+	devices, err := a.devices.EnumerateDevices(models.DeviceRoleRender)
+	if err != nil {
+		return fmt.Errorf("enumerate render devices: %w", err)
+	}
+
+	var failures []string
+	for _, d := range devices {
+		if err := a.devices.AttachAPO(d.ID); err != nil {
+			a.logger.Error("failed to attach APO to device", err, "device", d.ID, "name", d.Name)
+			failures = append(failures, fmt.Sprintf("%s: %v", d.Name, err))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("failed on %d/%d devices: %s", len(failures), len(devices), strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
