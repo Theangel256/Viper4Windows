@@ -1,18 +1,20 @@
 import { useAudioStore } from "../../store/audioStore";
+import { useState } from "react";
 import { Power, AlertCircle } from "lucide-react";
 
 export function PowerButton() {
-  const { master, setPower, isDriverInstalled, checkDriverStatus } = useAudioStore();
+  const { master, setPower, isDriverInstalled, installDriver } = useAudioStore();
+  const [installing, setInstalling] = useState(false);
 
   const handleAction = async () => {
     if (!isDriverInstalled) {
+      setInstalling(true);
       try {
-        const success = await window.go.main.App.SetDriverStatus(true);
-        if (success) {
-          await checkDriverStatus();
-        }
+        await installDriver();
       } catch (err) {
         console.error("Error installing driver:", err);
+      } finally {
+        setInstalling(false);
       }
       return;
     }
@@ -23,7 +25,8 @@ export function PowerButton() {
   return (
     <button
       onClick={handleAction}
-      className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-all border text-sm font-bold ${
+      disabled={installing}
+      className={`flex items-center gap-2 px-4 py-1.5 rounded-full transition-all border text-sm font-bold disabled:opacity-60 ${
         !isDriverInstalled
           ? "bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/30"
           : master.power
@@ -32,7 +35,13 @@ export function PowerButton() {
       }`}
     >
       {!isDriverInstalled ? <AlertCircle size={14} /> : <Power size={14} />}
-      {!isDriverInstalled ? "INSTALL DRIVER" : master.power ? "POWER ON" : "POWER OFF"}
+      {!isDriverInstalled
+        ? installing
+          ? "INSTALLING…"
+          : "INSTALL DRIVER"
+        : master.power
+          ? "POWER ON"
+          : "POWER OFF"}
     </button>
   );
 }

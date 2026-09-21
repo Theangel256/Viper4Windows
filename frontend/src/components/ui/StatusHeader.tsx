@@ -3,14 +3,14 @@ import { RotateCcw } from "lucide-react";
 
 export function StatusHeader() {
   // Extraemos el booleano y la función de refresco del store
-  const { isDriverInstalled, checkDriverStatus } = useAudioStore();
+  const { isDriverInstalled, refreshAPOStatus } = useAudioStore();
 
   // Convertimos el booleano al string que espera tu diseño
   const systemStatus = isDriverInstalled ? 'REGISTERED' : 'DRIVER MISSING';
 
   const onRefreshStatus = async () => {
     // Esto llamará a Go y actualizará isDriverInstalled en todo el sistema
-    await checkDriverStatus();
+    await refreshAPOStatus();
   };
 
   return (

@@ -286,6 +286,7 @@ interface AudioStore extends DSPState {
 
   init(): Promise<void>;
   refreshAPOStatus(): Promise<void>;
+  installDriver(): Promise<void>;
 
   setPower(on: boolean): void;
   setPreVol(db: number): void;
@@ -378,6 +379,15 @@ export const useAudioStore = create<AudioStore>()(
       async refreshAPOStatus() {
         const status = await call(() => Go.GetAPOStatus());
         set({ isDriverInstalled: !!status?.isInstalled });
+      },
+
+      // Wired to the same InstallAPOOnAllRender the Audio Devices
+      // panel's "Install on All Active Outputs" button uses — there is
+      // no separate global "install the driver" Go method, and the
+      // backend logs already confirm this path works end to end.
+      async installDriver() {
+        await call(() => Go.InstallAPOOnAllRender());
+        await get().refreshAPOStatus();
       },
 
       setPower(on) {
