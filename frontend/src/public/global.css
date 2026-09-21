@@ -76,7 +76,7 @@
 }
 @font-face {
   font-family: 'SF Pro Rounded';
-  src: url('/frontend/src/assets/SF-Pro-Rounded-Regular.otf') format('opentype');
+  src: '/frontend/src/public/SF-Pro-Rounded-Regular.otf' format('opentype');
   font-weight: normal;
   font-style: normal;
 }
