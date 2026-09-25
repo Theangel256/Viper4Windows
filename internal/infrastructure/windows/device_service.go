@@ -68,6 +68,10 @@ func (s *DeviceService) EnumerateDevices(role models.DeviceRole) ([]models.Audio
 			continue
 		}
 		dev.HasAPO = s.IsAPOAttached(guid)
+		if legacy, clsid := s.checkLegacyResidue(guid); legacy {
+			dev.LegacyResidue = true
+			dev.LegacyCLSID = clsid
+		}
 		devices = append(devices, dev)
 	}
 
@@ -218,6 +222,31 @@ func (s *DeviceService) IsAPOAttached(deviceID string) bool {
 		return strings.EqualFold(val, ViPER_CLSID)
 	}
 	return false
+}
+
+// checkLegacyResidue reports whether PreMix points at some OTHER CLSID
+// than ours — the exact "always shows installed but nothing works"
+// symptom an old, separately-uninstalled ViPER4Windows leaves behind:
+// its own configurator deregistered its CLSID from
+// AudioEngine\AudioProcessingObjects, but never cleaned the per-device
+// FxProperties pointer, so Windows still tries (and fails) to
+// instantiate a CLSID nothing provides anymore.
+func (s *DeviceService) checkLegacyResidue(deviceID string) (bool, string) {
+	fxPath := OutputBasePath + `\` + deviceID + `\FxProperties`
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, fxPath, registry.READ)
+	if err != nil {
+		return false, ""
+	}
+	defer k.Close()
+
+	val, _, err := k.GetStringValue(pkeyFXPreMix)
+	if err != nil || val == "" {
+		return false, ""
+	}
+	if strings.EqualFold(val, ViPER_CLSID) {
+		return false, ""
+	}
+	return true, val
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────────

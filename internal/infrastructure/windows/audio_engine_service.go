@@ -2,8 +2,10 @@ package windows
 
 import (
 	"os/exec"
+	"strings"
 	"time"
 
+	"viper4windows/internal/domain/models"
 	"viper4windows/internal/domain/ports"
 )
 
@@ -44,12 +46,26 @@ func (s *AudioEngineService) Restart() error {
 	return nil
 }
 
-// IsRunning checks if the audio service is active
+// IsRunning checks if the audio service is active.
+//
+// FIX: `.Run()` alone only reports whether sc.exe itself failed to
+// execute — sc query exits 0 for a STOPPED-but-existing service too,
+// so this used to report "running" for a dead service. Now actually
+// parses STATE from the output.
 func (s *AudioEngineService) IsRunning() bool {
-	// Simple check: try to query the service state
-	cmd := exec.Command("sc", "query", "AudioEndpointBuilder")
-	if err := cmd.Run(); err != nil {
+	out, err := exec.Command("sc", "query", "AudioEndpointBuilder").Output()
+	if err != nil {
 		return false
 	}
-	return true
+	return strings.Contains(string(out), "RUNNING")
+}
+
+// GetStatus implements ports.AudioEnginePort. SampleRate/ProcessTime/
+// BufferSize would need real telemetry the APO doesn't send back yet
+// (SharedMemoryService.ReadAPOStatus() is still a placeholder — see
+// its own comment) — left at zero rather than a made-up number.
+func (s *AudioEngineService) GetStatus() (models.AudioEngineStatus, error) {
+	return models.AudioEngineStatus{
+		IsRunning: s.IsRunning(),
+	}, nil
 }

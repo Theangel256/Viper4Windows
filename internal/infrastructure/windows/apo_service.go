@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"viper4windows/internal/domain/models"
 	"viper4windows/internal/domain/ports"
@@ -168,6 +169,11 @@ func (s *APOService) GetStatus() models.APOStatus {
 	}
 	if dllPath, _, err := k.GetStringValue("Library"); err == nil {
 		status.DllPath = dllPath
+	}
+	if runtime.GOARCH == "386" {
+		status.Architecture = "x86"
+	} else {
+		status.Architecture = "x64"
 	}
 	return status
 }

@@ -19,7 +19,8 @@ var assets embed.FS
 
 func main() {
 	presetsDir := resolvePresetsDir()
-	viperApp := app.NewApp(presetsDir)
+	dllPath := resolveDllPath()
+	viperApp := app.NewApp(presetsDir, dllPath)
 
 	err := wails.Run(&options.App{
 		Title:         "Viper4Windows — Audio DSP",
@@ -64,4 +65,14 @@ func resolvePresetsDir() string {
 		return "presets"
 	}
 	return filepath.Join(filepath.Dir(exePath), "presets")
+}
+
+// resolveDllPath is the same "next to the exe" convention the
+// original pre-refactor app.go used for ViPERDSP.dll.
+func resolveDllPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "ViPERDSP.dll"
+	}
+	return filepath.Join(filepath.Dir(exePath), "ViPERDSP.dll")
 }

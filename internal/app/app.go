@@ -36,6 +36,9 @@ type App struct {
 	presetManager ports.PresetRepository
 	security      ports.SecurityPort
 	devices       ports.DeviceManagementPort
+	apo           ports.APORegistrationPort
+	audioEngine   ports.AudioEnginePort
+	dllPath       string
 
 	// Application state
 	state      models.DSPState
@@ -51,8 +54,10 @@ type App struct {
 // Constructor & Initialization
 // ─────────────────────────────────────────────────────────────────────────────
 
-// NewApp creates a new application instance with dependency injection
-func NewApp(presetsDir string) *App {
+// NewApp creates a new application instance with dependency injection.
+// dllPath is where ViPERDSP.dll lives (main.go resolves it next to the
+// exe) — APOService.Install needs it to register the CLSID.
+func NewApp(presetsDir, dllPath string) *App {
 	// Create logger
 	logger := utils.NewLogger("ViPER4Windows")
 
@@ -69,6 +74,16 @@ func NewApp(presetsDir string) *App {
 	// needs (GetAudioDevices/InstallAPOOnDevice/etc. below) — it existed as
 	// infrastructure already, it just wasn't wired into App yet.
 	deviceSvc := windows.NewDeviceService(logger, securitySvc)
+	// Neither of these two was constructed anywhere before this pass.
+	// Concretely: InstallAPOOnDevice only ever wrote FxProperties to
+	// POINT AT the ViPER CLSID — it never registered that CLSID with
+	// Windows in the first place (that's APOService.Install's job), and
+	// nothing ever restarted the audio engine so a running audiodg.exe
+	// would actually pick up the change. That combination is exactly
+	// "APO attaches successfully in the logs, but no effect is
+	// audible" — there was nothing for Windows to instantiate.
+	apoSvc := windows.NewAPOService(logger, securitySvc)
+	engineSvc := windows.NewAudioEngineService(logger)
 
 	return &App{
 		logger:        logger,
@@ -77,6 +92,9 @@ func NewApp(presetsDir string) *App {
 		presetManager: presetMgr,
 		security:      securitySvc,
 		devices:       deviceSvc,
+		apo:           apoSvc,
+		audioEngine:   engineSvc,
+		dllPath:       dllPath,
 		state:         models.NewDefaultState(),
 		updateRate:    16 * time.Millisecond, // 60Hz max update rate
 	}
@@ -319,13 +337,110 @@ func (a *App) IsElevated() bool {
 	return a.security.IsElevated()
 }
 
-// GetAPOStatus returns APO connection status
+// GetAPOStatus returns real APO registration status — this used to
+// report sharedMem.IsConnected() for both IsInstalled and IsAttached,
+// which answers "is our IPC channel open", not "is the APO actually
+// registered with Windows". Now backed by APOService.GetStatus(),
+// which reads the real AudioEngine\AudioProcessingObjects registry
+// key, plus a real check of whether any render device currently
+// points at it.
 func (a *App) GetAPOStatus() models.APOStatus {
-	return models.APOStatus{
-		IsInstalled: a.sharedMem.IsConnected(),
-		IsAttached:  a.sharedMem.IsConnected(),
-		Version:     "1.0.0", // Would read from shared memory
+	status := a.apo.GetStatus()
+	status.IsAttached = a.anyDeviceHasAPO()
+	return status
+}
+
+// InstallDriver does the full, real "install the driver" sequence
+// that neither the old app.go nor this one ever actually did in one
+// place: register the APO CLSID with Windows (APOService.Install —
+// copies ViPERDSP.dll to System32, writes the
+// AudioEngine\AudioProcessingObjects entry), point every active
+// output device's FxProperties at it (InstallAPOOnAllRender), then
+// restart the audio engine so the already-running audiodg.exe process
+// actually picks up the change instead of needing a reboot. This is
+// what "Reinstall + recycle" should call.
+func (a *App) InstallDriver() error {
+	if err := a.apo.Install(a.dllPath); err != nil {
+		a.emitToast("Driver install failed: "+err.Error(), "error")
+		return fmt.Errorf("register APO: %w", err)
 	}
+	if err := a.InstallAPOOnAllRender(); err != nil {
+		a.emitToast("Attached to some devices, but some failed: "+err.Error(), "warning")
+		return fmt.Errorf("attach to devices: %w", err)
+	}
+	if err := a.audioEngine.Restart(); err != nil {
+		a.emitToast("Driver registered, but the audio engine restart failed: "+err.Error(), "warning")
+		return fmt.Errorf("restart audio engine: %w", err)
+	}
+	a.emitToast("Audio engine restarted. APO is live on all outputs.", "success")
+	return nil
+}
+
+// UninstallDriver detaches from every render device, then removes the
+// system-wide CLSID registration, then restarts the engine so the
+// removal actually takes effect.
+func (a *App) UninstallDriver() error {
+	devs, err := a.devices.EnumerateDevices(models.DeviceRoleRender)
+	if err != nil {
+		return fmt.Errorf("enumerate render devices: %w", err)
+	}
+	for _, d := range devs {
+		if d.HasAPO {
+			_ = a.devices.DetachAPO(d.ID)
+		}
+	}
+	if err := a.apo.Uninstall(); err != nil {
+		return fmt.Errorf("unregister APO: %w", err)
+	}
+	return a.audioEngine.Restart()
+}
+
+// RestartAudioEngine recycles the Windows Audio service on its own —
+// the "RECHECK"/"Reinstall + recycle" path without touching
+// registration, for when devices are already attached correctly but
+// audiodg.exe just needs a kick (e.g. after Windows re-created an
+// endpoint).
+func (a *App) RestartAudioEngine() error {
+	if err := a.audioEngine.Restart(); err != nil {
+		a.emitToast("Audio engine restart failed: "+err.Error(), "error")
+		return err
+	}
+	a.emitToast("Audio engine restarted.", "success")
+	return nil
+}
+
+// emitToast is a no-op if called before Startup (a.ctx unset — e.g. a
+// unit test constructing App directly), matching how
+// OnSecondInstanceLaunch already assumes ctx is live.
+func (a *App) emitToast(message, tone string) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "app:toast", map[string]string{
+		"message": message,
+		"tone":    tone,
+	})
+}
+
+// GetAudioEngineStatus reports whether the Windows Audio service
+// itself is actually running (parsed from `sc query`, not just
+// whether the command executed — see audio_engine_service.go).
+func (a *App) GetAudioEngineStatus() models.AudioEngineStatus {
+	status, _ := a.audioEngine.GetStatus()
+	return status
+}
+
+func (a *App) anyDeviceHasAPO() bool {
+	devs, err := a.devices.EnumerateDevices(models.DeviceRoleRender)
+	if err != nil {
+		return false
+	}
+	for _, d := range devs {
+		if d.HasAPO {
+			return true
+		}
+	}
+	return false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
-import { Activity, SlidersHorizontal, Speaker } from "lucide-react";
+import { Activity, SlidersHorizontal, Speaker, ShieldCheck } from "lucide-react";
 
 import { MasterControls } from "./panels/MasterControls";
 import { XBass } from "./panels/XBass";
@@ -9,6 +9,7 @@ import { XClarity } from "./panels/XClarity";
 import { Surround3D } from "./panels/Surround3D";
 import { ReverbSidebar } from "./panels/ReverbSidebar";
 import AudioDevices from "./panels/AudioDevices";
+import DriverPanel from "./panels/DriverPanel";
 import { useAudioStore } from "../store/audioStore";
 import { Sidebar } from "./Sidebar";
 import { Equalizer } from "./Equalizer";
@@ -92,6 +93,7 @@ export function AudioDSP({ systemStatus: _systemStatus, onRefreshStatus: _onRefr
   const [toast, setToast] = useState<{ message: string; tone?: string } | null>(null);
   const [showEqualizer, setShowEqualizer] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
+  const [showDriver, setShowDriver] = useState(false);
   const init = useAudioStore((state) => state.init);
 
   useEffect(() => {
@@ -194,7 +196,7 @@ export function AudioDSP({ systemStatus: _systemStatus, onRefreshStatus: _onRefr
             <ReverbSidebar />
           </motion.section>
 
-          <motion.footer variants={itemVariants} className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-1">
+          <motion.footer variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mt-1">
             <UtilityLauncher
               icon={<Activity size={18} className="text-violet-400" />}
               title="Equalizer"
@@ -205,9 +207,16 @@ export function AudioDSP({ systemStatus: _systemStatus, onRefreshStatus: _onRefr
             <UtilityLauncher
               icon={<Speaker size={18} className="text-red-400" />}
               title="Audio Devices"
-              subtitle="APO driver configuration"
+              subtitle="Per-device APO attach"
               accent="bg-red-500/10"
               onClick={() => setShowDevices(true)}
+            />
+            <UtilityLauncher
+              icon={<ShieldCheck size={18} className="text-emerald-400" />}
+              title="Driver Status"
+              subtitle="Registration & recovery"
+              accent="bg-emerald-500/10"
+              onClick={() => setShowDriver(true)}
             />
           </motion.footer>
         </motion.div>
@@ -228,6 +237,21 @@ export function AudioDSP({ systemStatus: _systemStatus, onRefreshStatus: _onRefr
           onClose={() => setShowDevices(false)}
         >
           <AudioDevices onClose={() => setShowDevices(false)} overlay />
+        </OverlayShell>
+      )}
+
+      {showDriver && (
+        <OverlayShell
+          size="medium"
+          onClose={() => setShowDriver(false)}
+        >
+          <DriverPanel
+            onClose={() => setShowDriver(false)}
+            onManageDevices={() => {
+              setShowDriver(false);
+              setShowDevices(true);
+            }}
+          />
         </OverlayShell>
       )}
     </div>

@@ -282,11 +282,19 @@ interface AudioStore extends DSPState {
   ready: boolean;
   presets: string[];
   isDriverInstalled: boolean;
+  isDriverAttached: boolean;
   isElevated: boolean;
+  driverVersion: string;
+  driverArchitecture: string;
+  driverDllPath: string;
+  audioEngineRunning: boolean;
 
   init(): Promise<void>;
   refreshAPOStatus(): Promise<void>;
+  refreshAudioEngineStatus(): Promise<void>;
   installDriver(): Promise<void>;
+  uninstallDriver(): Promise<void>;
+  restartAudioEngine(): Promise<void>;
 
   setPower(on: boolean): void;
   setPreVol(db: number): void;
@@ -357,13 +365,19 @@ export const useAudioStore = create<AudioStore>()(
       ready: false,
       presets: [],
       isDriverInstalled: false,
+      isDriverAttached: false,
       isElevated: false,
+      driverVersion: "",
+      driverArchitecture: "",
+      driverDllPath: "",
+      audioEngineRunning: false,
 
       async init() {
-        const [state, apoStatus, elevated] = await Promise.all([
+        const [state, apoStatus, elevated, engineStatus] = await Promise.all([
           call(() => Go.GetState()),
           call(() => Go.GetAPOStatus()),
           call(() => Go.IsElevated()),
+          call(() => Go.GetAudioEngineStatus()),
         ]);
         if (state) {
           set({ ...(state as unknown as DSPState) });
@@ -371,23 +385,53 @@ export const useAudioStore = create<AudioStore>()(
         set({
           ready: true,
           isDriverInstalled: !!apoStatus?.isInstalled,
+          isDriverAttached: !!apoStatus?.isAttached,
+          driverVersion: apoStatus?.version ?? "",
+          driverArchitecture: apoStatus?.architecture ?? "",
+          driverDllPath: apoStatus?.dllPath ?? "",
           isElevated: !!elevated,
+          audioEngineRunning: !!engineStatus?.isRunning,
         });
         get().refreshPresets();
       },
 
       async refreshAPOStatus() {
         const status = await call(() => Go.GetAPOStatus());
-        set({ isDriverInstalled: !!status?.isInstalled });
+        set({
+          isDriverInstalled: !!status?.isInstalled,
+          isDriverAttached: !!status?.isAttached,
+          driverVersion: status?.version ?? "",
+          driverArchitecture: status?.architecture ?? "",
+          driverDllPath: status?.dllPath ?? "",
+        });
       },
 
-      // Wired to the same InstallAPOOnAllRender the Audio Devices
-      // panel's "Install on All Active Outputs" button uses — there is
-      // no separate global "install the driver" Go method, and the
-      // backend logs already confirm this path works end to end.
+      async refreshAudioEngineStatus() {
+        const status = await call(() => Go.GetAudioEngineStatus());
+        set({ audioEngineRunning: !!status?.isRunning });
+      },
+
+      // InstallDriver on the Go side does the full real sequence:
+      // register the APO CLSID with Windows, attach it to every render
+      // device, then restart the audio engine so audiodg.exe actually
+      // picks it up. Go also emits an "app:toast" event on
+      // success/failure — AudioDSP.tsx already listens for that, so no
+      // extra toast call is needed here.
       async installDriver() {
-        await call(() => Go.InstallAPOOnAllRender());
+        await call(() => Go.InstallDriver());
         await get().refreshAPOStatus();
+        await get().refreshAudioEngineStatus();
+      },
+
+      async uninstallDriver() {
+        await call(() => Go.UninstallDriver());
+        await get().refreshAPOStatus();
+        await get().refreshAudioEngineStatus();
+      },
+
+      async restartAudioEngine() {
+        await call(() => Go.RestartAudioEngine());
+        await get().refreshAudioEngineStatus();
       },
 
       setPower(on) {
